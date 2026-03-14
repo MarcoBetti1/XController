@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "x-controller"
+version = "0.1.0"
+description = "Click-first Playwright controller for X (Twitter)"
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["playwright", "automation", "twitter", "x", "browser-automation"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "playwright>=1.40.0",
+]
+
+[project.optional-dependencies]
+lab = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "requests>=2.32.0",
+  "streamlit>=1.40.0",
+  "pandas>=2.2.0",
+  "pydantic>=2.10.0",
+]
+dev = [
+  "pytest>=8.3.0",
+]
+
+[tool.setuptools]
+packages = ["x_controller"]
+
+[tool.setuptools.package-dir]
+x_controller = "."

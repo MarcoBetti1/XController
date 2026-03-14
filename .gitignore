@@ -1,0 +1,36 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env/
+
+# Packaging artifacts
+build/
+dist/
+.eggs/
+*.egg-info/
+pip-wheel-metadata/
+
+# Test and tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local runtime data
+logs/
+data/profiles/
+
+# IDE/editor files
+.vscode/
+.idea/
+
+# OS cruft
+.DS_Store
+Thumbs.db
