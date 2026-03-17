@@ -20,14 +20,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-lab = [
-  "fastapi>=0.115.0",
-  "uvicorn[standard]>=0.32.0",
-  "requests>=2.32.0",
-  "streamlit>=1.40.0",
-  "pandas>=2.2.0",
-  "pydantic>=2.10.0",
-]
 dev = [
   "pytest>=8.3.0",
 ]

@@ -2,7 +2,9 @@
 
 `x_controller` is a click-first Playwright library for automating common X.com workflows with a persistent browser profile.
 
-It is designed for reuse from scripts, services, dashboards, and test harnesses instead of a single hard-coded workflow.
+It is designed for reuse from scripts and services instead of a single hard-coded workflow.
+
+`main` is the clean integration branch for downstream projects. Lab UI, lab API, and test-harness work live on `labui-testing`.
 
 ## What It Supports
 
@@ -14,7 +16,6 @@ It is designed for reuse from scripts, services, dashboards, and test harnesses 
 - Verified delete flows for own posts, replies, and reposts
 - Bulk cleanup helpers for posts, replies, reposts, or all content
 - Post metric scraping
-- A lab API/UI for manual method validation
 
 ## Installation
 
@@ -32,19 +33,7 @@ python -m pip install -e ./x_controller
 playwright install chromium
 ```
 
-Lab API/UI dependencies are optional. Install them with the `lab` extra:
-
-```bash
-python -m pip install -e ".[lab]"
-```
-
-If you also want the lab stack from the parent directory:
-
-```bash
-python -m pip install -e "./x_controller[lab]"
-```
-
-The packaging metadata is configured so this flat package layout installs as `x_controller`, with the lab stack behind an optional extra.
+The packaging metadata is configured so this flat package layout installs as `x_controller`.
 
 ## Quick Start
 
@@ -80,7 +69,6 @@ Primary exports:
 - `x_controller.XTextAdapter`
 - `x_controller.ControllerSettings`
 - `x_controller.ObservedPostData`
-- `x_controller.ControllerLabManager`
 
 Compatibility aliases:
 
@@ -93,34 +81,19 @@ Compatibility aliases:
 - `base.py`: shared adapter contract and post model
 - `settings.py`: runtime settings and configuration normalization
 - `human.py`: human-like timing and mouse/typing helpers
-- `lab.py`: manual lab orchestration
-- `lab_api.py`: FastAPI wrapper around the lab manager
-- `lab_ui.py`: Streamlit UI for lab actions
 - `docs/API.md`: method-level API notes and compatibility guidance
 - `docs/ARCHITECTURE.md`: internal structure and extension points
-- `CHANGELOG.md`: tracked cleanup and migration notes
+- `docs/BRANCHING.md`: branch responsibilities and daily git workflow
+- `docs/CI_CD.md`: CI checks and release/update process
+- `CHANGELOG.md`: next-feature notes
 
-## Lab Tools
+## Branch Workflow
 
-Install the lab extra before starting these commands:
+- `main`: reusable controller package only. This is the branch the downstream project should pull from.
+- `labui-testing`: manual UI/API tooling and test-only work. Keep it rebased on `main`.
+- When a core fix is developed on `labui-testing`, cherry-pick or open a focused PR back into `main`. Do not merge the branch wholesale or the lab/test files come back.
 
-```bash
-python -m pip install -e ".[lab]"
-```
-
-Start the lab API:
-
-```bash
-python -m x_controller.lab_api --host 127.0.0.1 --port 8010
-```
-
-Start the lab UI:
-
-```bash
-streamlit run x_controller/lab_ui.py
-```
-
-If you are already inside the package directory, `streamlit run lab_ui.py` works as well.
+See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 
 ## Notes For Reuse
 
@@ -129,8 +102,16 @@ If you are already inside the package directory, `streamlit run lab_ui.py` works
 - Sync Playwright fallback is preferred on Windows to avoid event-loop/subprocess issues.
 - Methods that mutate state should be treated as best-effort browser automation, not transactional API calls.
 
+## CI/CD
+
+GitHub Actions should validate `main` before the downstream project updates from it. The included workflow performs install/import/build checks on both `main` and `labui-testing`, and runs `pytest` only when tests exist on the branch.
+
+See [CI/CD instructions](docs/CI_CD.md) for the release and update flow.
+
 ## Additional Docs
 
 - [API reference](docs/API.md)
 - [Architecture notes](docs/ARCHITECTURE.md)
+- [Branching workflow](docs/BRANCHING.md)
+- [CI/CD instructions](docs/CI_CD.md)
 - [Change log](CHANGELOG.md)

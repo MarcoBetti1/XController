@@ -11,7 +11,9 @@ The package is structured around one stateful adapter that owns:
 
 The library favors click-driven navigation first and uses direct URL navigation as a recovery path.
 
-## Current Modules
+`main` intentionally contains only the reusable controller package. Lab UI, lab API, and test harness files belong on `labui-testing`.
+
+## Current Main-Branch Modules
 
 - `adapter.py`
   Main controller implementation and X-specific flow logic.
@@ -21,12 +23,6 @@ The library favors click-driven navigation first and uses direct URL navigation 
   Runtime knobs for browser size, typing cadence, pauses, and user-agent defaults.
 - `human.py`
   Helper methods for jitter, typing cadence, mouse movement, and network-idle waits.
-- `lab.py`
-  Session orchestration and action runner for manual verification.
-- `lab_api.py`
-  FastAPI transport over the lab manager.
-- `lab_ui.py`
-  Streamlit frontend for exercising controller actions manually.
 
 ## Adapter Organization
 
@@ -45,7 +41,15 @@ The main cleanup rule applied here was: keep the public behavior stable, but con
 
 - `XController` remains an alias of `XTextAdapter`.
 - `comment_post()` is still supported, but both public reply methods share one internal implementation now.
-- Existing lab endpoints were kept so manual validation workflows do not break.
+
+## Branch Separation
+
+- `main`
+  Releasable controller code and docs only.
+- `labui-testing`
+  Streamlit/FastAPI tooling, manual walkthrough utilities, and automated tests.
+
+Core fixes may be developed on `labui-testing`, but they should be merged back into `main` selectively so `main` stays consumable by the downstream project.
 
 ## Packaging
 
@@ -56,5 +60,5 @@ This repository uses a flat package layout where the package root is the project
 ## Recommended Next Steps
 
 - Split non-X-specific browser helpers into a reusable internal module if another platform adapter is added.
-- Add integration tests around mocked DOM snapshots or controlled test pages before broadening the action surface further.
+- Keep automated tests on `labui-testing`, or add a small core-only test set back to `main` if the downstream integration path needs it.
 - Introduce semantic version tags once the API is stable enough for third-party consumers.

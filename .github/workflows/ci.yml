@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - labui-testing
+  pull_request:
+    branches:
+      - main
+      - labui-testing
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version:
+          - "3.10"
+          - "3.11"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Upgrade pip and install build
+        run: python -m pip install --upgrade pip build
+
+      - name: Install project
+        shell: bash
+        run: |
+          if grep -q '^lab = \[' pyproject.toml && grep -q '^dev = \[' pyproject.toml; then
+            python -m pip install -e ".[lab,dev]"
+          elif grep -q '^dev = \[' pyproject.toml; then
+            python -m pip install -e ".[dev]"
+          else
+            python -m pip install -e .
+          fi
+
+      - name: Smoke test public imports
+        run: |
+          python - <<'PY'
+          import x_controller
+          from x_controller import ControllerSettings, ObservedPostData, XController
+
+          assert x_controller.__version__
+          assert ControllerSettings
+          assert ObservedPostData
+          assert XController
+          PY
+
+      - name: Build package artifacts
+        run: python -m build
+
+      - name: Run tests when present
+        shell: bash
+        run: |
+          if compgen -G "tests/*.py" > /dev/null; then
+            pytest -q
+          else
+            echo "No tests on this branch."
+          fi

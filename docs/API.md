@@ -1,5 +1,7 @@
 # API Notes
 
+This document describes the public package surface shipped on `main`.
+
 This package exposes one main controller class:
 
 - `XController`
