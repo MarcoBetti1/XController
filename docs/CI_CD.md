@@ -17,7 +17,11 @@ The workflow does three things:
 - runs an import smoke test for the public package
 - builds the wheel and sdist
 
-If the branch contains a `tests/` directory, it also runs `pytest`.
+If the branch contains a `tests/` directory, it also runs the suite with:
+
+```bash
+python -m unittest discover -s tests -p "test_*.py"
+```
 
 That means:
 

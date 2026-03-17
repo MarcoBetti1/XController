@@ -104,7 +104,7 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 
 ## CI/CD
 
-GitHub Actions should validate `main` before the downstream project updates from it. The included workflow performs install/import/build checks on both `main` and `labui-testing`, and runs `pytest` only when tests exist on the branch.
+GitHub Actions should validate `main` before the downstream project updates from it. The included workflow performs install/import/build checks on both `main` and `labui-testing`, and runs the `tests/` suite with `unittest` discovery only when tests exist on the branch.
 
 See [CI/CD instructions](docs/CI_CD.md) for the release and update flow.
 

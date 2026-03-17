@@ -57,11 +57,11 @@ jobs:
       - name: Build package artifacts
         run: python -m build
 
-      - name: Run tests when present
+      - name: Run unittest suite when present
         shell: bash
         run: |
           if compgen -G "tests/*.py" > /dev/null; then
-            pytest -q
+            python -m unittest discover -s tests -p "test_*.py"
           else
             echo "No tests on this branch."
           fi
