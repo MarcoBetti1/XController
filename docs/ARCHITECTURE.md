@@ -55,7 +55,7 @@ Core fixes may be developed on `labui-testing`, but they should be merged back i
 
 This repository uses a flat package layout where the package root is the project root itself.
 
-`pyproject.toml` now explicitly maps the package name `x_controller` to `.` so editable installs and wheels do not depend on implicit setuptools discovery.
+`pyproject.toml` now explicitly maps the package name `XController` to `.` so editable installs and wheels do not depend on implicit setuptools discovery.
 
 ## Recommended Next Steps
 

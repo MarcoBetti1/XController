@@ -1,6 +1,6 @@
-# x_controller
+# XController
 
-`x_controller` is a click-first Playwright library for automating common X.com workflows with a persistent browser profile.
+`XController` is a click-first Playwright library for automating common X.com workflows with a persistent browser profile.
 
 It is designed for reuse from scripts and services instead of a single hard-coded workflow.
 
@@ -29,18 +29,18 @@ playwright install chromium
 Core library only, from the parent directory:
 
 ```bash
-python -m pip install -e ./x_controller
+python -m pip install -e ./XController
 playwright install chromium
 ```
 
-The packaging metadata is configured so this flat package layout installs as `x_controller`.
+The packaging metadata is configured so this flat package layout installs as `XController`.
 
 ## Quick Start
 
 ```python
 import asyncio
 
-from x_controller import XController
+from XController import XController
 
 
 async def main() -> None:
@@ -65,10 +65,10 @@ asyncio.run(main())
 
 Primary exports:
 
-- `x_controller.XController`
-- `x_controller.XTextAdapter`
-- `x_controller.ControllerSettings`
-- `x_controller.ObservedPostData`
+- `XController.XController`
+- `XController.XTextAdapter`
+- `XController.ControllerSettings`
+- `XController.ObservedPostData`
 
 Compatibility aliases:
 

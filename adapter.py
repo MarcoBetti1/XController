@@ -21,7 +21,7 @@ from .settings import ControllerSettings
 from .human import HumanMotion
 from .base import ObservedPostData, SocialPlatformAdapter
 
-logger = logging.getLogger("x_controller.adapter")
+logger = logging.getLogger("XController.adapter")
 
 
 class XTextAdapter(SocialPlatformAdapter):

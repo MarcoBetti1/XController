@@ -45,10 +45,10 @@ jobs:
       - name: Smoke test public imports
         run: |
           python - <<'PY'
-          import x_controller
-          from x_controller import ControllerSettings, ObservedPostData, XController
+          import XController
+          from XController import ControllerSettings, ObservedPostData, XController
 
-          assert x_controller.__version__
+          assert XController.__version__
           assert ControllerSettings
           assert ObservedPostData
           assert XController

@@ -25,7 +25,7 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["x_controller"]
+packages = ["XController"]
 
 [tool.setuptools.package-dir]
-x_controller = "."
+XController = "."
