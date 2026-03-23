@@ -45,13 +45,13 @@ jobs:
       - name: Smoke test public imports
         run: |
           python - <<'PY'
-          import XController
-          from XController import ControllerSettings, ObservedPostData, XController
+          import XController as XController_pkg
+          from XController import ControllerSettings, ObservedPostData, XController as XControllerClass
 
-          assert XController.__version__
+          assert XController_pkg.__version__
           assert ControllerSettings
           assert ObservedPostData
-          assert XController
+          assert XControllerClass
           PY
 
       - name: Build package artifacts
