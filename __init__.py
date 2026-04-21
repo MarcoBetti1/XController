@@ -5,7 +5,7 @@ from .base import ObservedPostData, SocialPlatformAdapter
 from .settings import ControllerSettings
 
 try:
-    __version__ = version("x-controller")
+    __version__ = version("XController")
 except PackageNotFoundError:
     __version__ = "0.1.0"
 
