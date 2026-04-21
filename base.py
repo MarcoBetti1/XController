@@ -19,10 +19,63 @@ class ObservedPostData:
         value = self.raw.get("metrics")
         return value if isinstance(value, dict) else {}
 
+    @property
+    def author_limited(self) -> bool:
+        return bool(self.raw.get("author_limited"))
+
+    @property
+    def reply_limited(self) -> bool:
+        return bool(self.raw.get("reply_limited"))
+
+    @property
+    def author_limit_notice(self) -> str:
+        return str(self.raw.get("author_limit_notice") or "")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "platform_post_id": self.platform_post_id,
             "author": self.author,
+            "text": self.text,
+            "raw": dict(self.raw),
+        }
+
+
+@dataclass
+class ObservedNotificationData:
+    """Normalized notification payload returned by notification reads."""
+
+    notification_id: str
+    notification_type: str
+    actor: str
+    text: str
+    raw: dict[str, Any]
+
+    @property
+    def platform_post_id(self) -> str:
+        value = self.raw.get("post_id") or self.raw.get("platform_post_id")
+        return str(value or "")
+
+    @property
+    def unread(self) -> bool:
+        return bool(self.raw.get("unread"))
+
+    @property
+    def author_limited(self) -> bool:
+        return bool(self.raw.get("author_limited"))
+
+    @property
+    def reply_limited(self) -> bool:
+        return bool(self.raw.get("reply_limited"))
+
+    @property
+    def author_limit_notice(self) -> str:
+        return str(self.raw.get("author_limit_notice") or "")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "notification_id": self.notification_id,
+            "notification_type": self.notification_type,
+            "actor": self.actor,
             "text": self.text,
             "raw": dict(self.raw),
         }
@@ -72,6 +125,13 @@ class SocialPlatformAdapter(ABC):
     @abstractmethod
     async def search_posts(self, query: str, limit: int = 10) -> list[ObservedPostData]:
         raise NotImplementedError
+
+    @abstractmethod
+    async def read_notifications(self, limit: int = 20, unread_only: bool = False) -> list[ObservedNotificationData]:
+        raise NotImplementedError
+
+    async def read_unread_notifications(self, limit: int = 20) -> list[ObservedNotificationData]:
+        return await self.read_notifications(limit=limit, unread_only=True)
 
     @abstractmethod
     async def post_text(self, text: str, image_paths: Any | None = None) -> str | None:

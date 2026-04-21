@@ -6,6 +6,7 @@ import random
 import re
 import time
 import contextlib
+import hashlib
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -19,7 +20,7 @@ from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as Sy
 
 from .settings import ControllerSettings
 from .human import HumanMotion
-from .base import ObservedPostData, SocialPlatformAdapter
+from .base import ObservedNotificationData, ObservedPostData, SocialPlatformAdapter
 
 logger = logging.getLogger("XController.adapter")
 
@@ -37,6 +38,31 @@ class XTextAdapter(SocialPlatformAdapter):
     STATUS_URL_RE = re.compile(r"/status/([0-9]+)")
     PROFILE_URL_RE = re.compile(r"https?://(?:www\.)?x\.com/([^/?#]+)$")
     HANDLE_TEXT_RE = re.compile(r"@([A-Za-z0-9_]{1,15})")
+    REPLY_LIMIT_NOTICE_PATTERNS = [
+        re.compile(r"\bonly some accounts can reply\.?", re.IGNORECASE),
+        re.compile(
+            r"\b(?:post )?author\b.{0,80}\blimit(?:s|ed)?\b.{0,80}\b(?:who can reply|replies?)\.?",
+            re.IGNORECASE,
+        ),
+        re.compile(r"\blimit(?:s|ed)?\b.{0,80}\bwho can reply\.?", re.IGNORECASE),
+        re.compile(
+            r"\bonly (?:subscribed|subscribers|premium subscribers|verified accounts|accounts from selected regions|"
+            r"accounts you mention|accounts you mentioned|your subscribers|your followers|your circle)\b.{0,80}\bcan reply\.?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\baccounts\b.{0,120}\b(?:following|follows|follow|mentioned|subscribed)\b.{0,120}\bcan reply\.?",
+            re.IGNORECASE,
+        ),
+        re.compile(
+            r"\bverified accounts or accounts mentioned by @?[A-Za-z0-9_]{1,15}\b.{0,40}\bcan reply\.?",
+            re.IGNORECASE,
+        ),
+    ]
+    REPLY_LIMIT_BLOCKED_PATTERNS = [
+        re.compile(r"\byou cannot reply to this conversation\.?", re.IGNORECASE),
+        re.compile(r"\byou cannot post or quote external links in replies to this post\.?", re.IGNORECASE),
+    ]
     RESERVED_PROFILE_PATHS = {
         "",
         "compose",
@@ -94,6 +120,11 @@ class XTextAdapter(SocialPlatformAdapter):
         'a[href="/notifications/mentions"]',
         '[role="tab"]:has-text("Mentions")',
         'a:has-text("Mentions")',
+    ]
+    NOTIFICATION_UNREAD_SELECTORS = [
+        '[aria-label*="Unread"]',
+        '[data-testid*="unread"]',
+        '[data-testid*="Unread"]',
     ]
     SEARCH_INPUT_SELECTORS = [
         'input[data-testid="SearchBox_Search_Input"]',
@@ -1659,6 +1690,35 @@ class XTextAdapter(SocialPlatformAdapter):
             return (await self._inner_text(context_node, timeout_ms=1200)).strip()
         return ""
 
+    def _normalize_article_notice(self, value: str) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip()
+
+    def _extract_matching_notice(self, text: str, patterns: Sequence[re.Pattern[str]]) -> str:
+        compact = self._normalize_article_notice(text)
+        if not compact:
+            return ""
+        for pattern in patterns:
+            match = pattern.search(compact)
+            if match:
+                return match.group(0).strip()
+        return ""
+
+    def _extract_article_author_limit_state(self, body: str, social_context: str = "") -> dict[str, Any]:
+        raw = "\n".join(part for part in (body, social_context) if part)
+        reply_notice = self._extract_matching_notice(raw, self.REPLY_LIMIT_NOTICE_PATTERNS)
+        reply_blocked_notice = self._extract_matching_notice(raw, self.REPLY_LIMIT_BLOCKED_PATTERNS)
+        author_limited = bool(reply_notice or reply_blocked_notice)
+        notice = reply_notice or reply_blocked_notice
+        limit_type = "reply" if author_limited else ""
+        return {
+            "author_limited": author_limited,
+            "author_limit_type": limit_type,
+            "author_limit_notice": notice,
+            "reply_limited": author_limited,
+            "reply_limit_notice": notice,
+            "reply_limit_blocked": bool(reply_blocked_notice),
+        }
+
     async def _article_has_reply_context(self, article: Any) -> bool:
         if not article:
             return False
@@ -1694,6 +1754,7 @@ class XTextAdapter(SocialPlatformAdapter):
         is_repost = bool("reposted" in social_lower and author_lower != own_handle_lower)
         reply_context = await self._article_has_reply_context(article)
         is_reply = bool(author_lower == own_handle_lower and ("replying to" in body_lower or reply_context))
+        limit_state = self._extract_article_author_limit_state(body, social_context)
         return {
             "post_id": post_id,
             "url": url or (f"{self.BASE_URL}/i/web/status/{post_id}" if post_id else ""),
@@ -1702,6 +1763,7 @@ class XTextAdapter(SocialPlatformAdapter):
             "social_context": social_context,
             "is_reply": is_reply,
             "is_repost": is_repost,
+            **limit_state,
         }
 
     def _profile_item_matches_kind(self, item: dict[str, Any], kind: str, own_handle: str) -> bool:
@@ -1944,12 +2006,16 @@ class XTextAdapter(SocialPlatformAdapter):
                     continue
                 seen_ids.add(post_id)
                 text = (await self._extract_article_text(item))[:4000]
+                body = text
+                with contextlib.suppress(Exception):
+                    body = (await self._inner_text(item, timeout_ms=1200)).strip()[:4000]
                 author = ""
                 auth_locator = item.locator('div[data-testid="User-Name"] a[href^="/"]').first
                 if await self._count_locator(auth_locator):
                     auth_href = (await self._get_attribute(auth_locator, "href")) or ""
                     author = auth_href.strip("/").split("/")[-1]
                 metrics = await self._extract_article_metrics(item)
+                limit_state = self._extract_article_author_limit_state(body)
                 posts.append(
                     ObservedPostData(
                         post_id,
@@ -1957,6 +2023,8 @@ class XTextAdapter(SocialPlatformAdapter):
                         text,
                         {
                             "url": href,
+                            "body": body,
+                            **limit_state,
                             **metrics,
                             "metrics": metrics,
                         },
@@ -2021,6 +2089,182 @@ class XTextAdapter(SocialPlatformAdapter):
             stagnation_limit=2,
             allow_backtrack=False,
         )
+
+    async def _notification_article_unread(self, article: Any) -> bool:
+        if not article:
+            return False
+        for selector in self.NOTIFICATION_UNREAD_SELECTORS:
+            with contextlib.suppress(Exception):
+                marker = article.locator(selector).first
+                if await self._count_locator(marker):
+                    return True
+        with contextlib.suppress(Exception):
+            aria = (await self._get_attribute(article, "aria-label")) or ""
+            if re.search(r"\bunread\b", aria, flags=re.IGNORECASE):
+                return True
+        return False
+
+    async def _extract_notification_actor_handle(self, article: Any) -> str:
+        if not article:
+            return ""
+        links = article.locator('a[href^="/"]')
+        with contextlib.suppress(Exception):
+            for idx in range(min(await self._count_locator(links), 12)):
+                href = (await self._get_attribute(links.nth(idx), "href")) or ""
+                handle = self._extract_profile_handle_from_href(href)
+                if handle:
+                    return handle
+        with contextlib.suppress(Exception):
+            return self._extract_handle_from_text(await self._inner_text(article, timeout_ms=1200))
+        return ""
+
+    def _classify_notification_type(self, text: str, social_context: str = "") -> str:
+        raw = f"{social_context}\n{text}".lower()
+        if "followed you" in raw:
+            return "follow"
+        if "mentioned you" in raw or "mention" in raw:
+            return "mention"
+        if "replied" in raw or "replying to" in raw:
+            return "reply"
+        if "quoted" in raw:
+            return "quote"
+        if "reposted" in raw or "retweeted" in raw:
+            return "repost"
+        if "liked" in raw:
+            return "like"
+        return "notification"
+
+    def _notification_id(
+        self,
+        post_id: str,
+        actor: str,
+        notification_type: str,
+        created_at: datetime | None,
+        text: str,
+    ) -> str:
+        if post_id:
+            return f"{notification_type}:{post_id}:{actor or '-'}"
+        fingerprint = "|".join(
+            [
+                actor,
+                notification_type,
+                created_at.isoformat() if created_at else "",
+                text[:600],
+            ]
+        )
+        digest = hashlib.sha1(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return f"{notification_type}:{digest}"
+
+    async def _extract_notification_from_article(self, article: Any) -> ObservedNotificationData | None:
+        if not article:
+            return None
+
+        url = await self._extract_article_status_url(article)
+        post_id = self._extract_post_id(url)
+        text = (await self._extract_article_text(article))[:4000]
+        body = text
+        with contextlib.suppress(Exception):
+            body = (await self._inner_text(article, timeout_ms=1200)).strip()[:4000]
+        social_context = await self._extract_article_social_context(article)
+        actor = await self._extract_notification_actor_handle(article)
+        if not actor:
+            actor = await self._extract_article_author_handle(article)
+        created_at = await self._extract_article_timestamp(article)
+        unread = await self._notification_article_unread(article)
+        metrics = await self._extract_article_metrics(article)
+        limit_state = self._extract_article_author_limit_state(body, social_context)
+        notification_type = self._classify_notification_type(body or text, social_context)
+        notification_id = self._notification_id(post_id, actor, notification_type, created_at, body or text)
+
+        return ObservedNotificationData(
+            notification_id=notification_id,
+            notification_type=notification_type,
+            actor=actor,
+            text=text or body,
+            raw={
+                "post_id": post_id,
+                "platform_post_id": post_id,
+                "url": url,
+                "created_at": created_at.isoformat() if created_at else None,
+                "unread": unread,
+                "social_context": social_context,
+                "body": body,
+                **limit_state,
+                **metrics,
+                "metrics": metrics,
+            },
+        )
+
+    async def _collect_notifications_from_current_page(
+        self,
+        limit: int,
+        unread_only: bool = False,
+        scroll_rounds: int = 6,
+        max_scan: int = 80,
+        stagnation_limit: int = 2,
+    ) -> list[ObservedNotificationData]:
+        if not self.page:
+            return []
+
+        notifications: list[ObservedNotificationData] = []
+        seen_ids: set[str] = set()
+        stagnant_rounds = 0
+        for round_idx in range(max(1, int(scroll_rounds))):
+            articles = self.page.locator('article[data-testid="tweet"], article')
+            total = await self._count_locator(articles)
+            new_items = 0
+            for idx in range(min(total, max(1, int(max_scan)))):
+                notification = await self._extract_notification_from_article(articles.nth(idx))
+                if not notification:
+                    continue
+                if notification.notification_id in seen_ids:
+                    continue
+                seen_ids.add(notification.notification_id)
+                new_items += 1
+                if unread_only and not notification.unread:
+                    continue
+                notifications.append(notification)
+                if len(notifications) >= limit:
+                    return notifications
+
+            if round_idx < scroll_rounds - 1:
+                if new_items == 0:
+                    stagnant_rounds += 1
+                else:
+                    stagnant_rounds = 0
+                if stagnant_rounds >= stagnation_limit:
+                    break
+                await self._random_scroll(random.randint(420, 1180))
+                await self.human.jitter(260, 720)
+
+        return notifications
+
+    async def read_notifications(
+        self,
+        limit: int = 20,
+        unread_only: bool = False,
+    ) -> list[ObservedNotificationData]:
+        if not self.page:
+            return []
+
+        max_items = max(1, min(int(limit), 400))
+        if not await self._looks_like_notifications_page():
+            if not await self._open_notifications_via_click():
+                with contextlib.suppress(Exception):
+                    await self._goto(f"{self.BASE_URL}/notifications")
+        if not await self._looks_like_notifications_page():
+            return []
+
+        return await self._collect_notifications_from_current_page(
+            limit=max_items,
+            unread_only=unread_only,
+            scroll_rounds=max(2, (max_items // 5) + 3),
+            max_scan=max(max_items * 4, 40),
+            stagnation_limit=2,
+        )
+
+    async def read_unread_notifications(self, limit: int = 20) -> list[ObservedNotificationData]:
+        return await self.read_notifications(limit=limit, unread_only=True)
 
     def _parse_iso_datetime(self, value: str | None) -> datetime | None:
         raw = str(value or "").strip()
@@ -2100,6 +2344,9 @@ class XTextAdapter(SocialPlatformAdapter):
                 text = (await self._extract_article_text(item))[:4000]
                 if f"@{handle}" not in text.lower():
                     continue
+                body = text
+                with contextlib.suppress(Exception):
+                    body = (await self._inner_text(item, timeout_ms=1200)).strip()[:4000]
 
                 author = ""
                 auth_locator = item.locator('div[data-testid="User-Name"] a[href^="/"]').first
@@ -2114,6 +2361,7 @@ class XTextAdapter(SocialPlatformAdapter):
                     old_in_round = True
 
                 metrics = await self._extract_article_metrics(item)
+                limit_state = self._extract_article_author_limit_state(body)
                 mentions.append(
                     ObservedPostData(
                         post_id,
@@ -2123,6 +2371,8 @@ class XTextAdapter(SocialPlatformAdapter):
                             "url": href,
                             "mentioned_handle": handle,
                             "created_at": created_at.isoformat() if created_at else None,
+                            "body": body,
+                            **limit_state,
                             **metrics,
                             "metrics": metrics,
                         },

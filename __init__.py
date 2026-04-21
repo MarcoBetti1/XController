@@ -1,7 +1,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .adapter import XController, XTextAdapter
-from .base import ObservedPostData, SocialPlatformAdapter
+from .base import ObservedNotificationData, ObservedPostData, SocialPlatformAdapter
 from .settings import ControllerSettings
 
 try:
@@ -11,6 +11,7 @@ except PackageNotFoundError:
 
 __all__ = [
     "ControllerSettings",
+    "ObservedNotificationData",
     "ObservedPostData",
     "SocialPlatformAdapter",
     "XController",
