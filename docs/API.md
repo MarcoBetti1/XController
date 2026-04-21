@@ -27,6 +27,8 @@ This package exposes one main controller class:
 - `await read_timeline(limit: int = 20) -> list[ObservedPostData]`
 - `await search_posts(query: str, limit: int = 10) -> list[ObservedPostData]`
 - `await read_visible_posts(limit: int = 20) -> list[ObservedPostData]`
+- `await read_notifications(limit: int = 20, unread_only: bool = False) -> list[ObservedNotificationData]`
+- `await read_unread_notifications(limit: int = 20) -> list[ObservedNotificationData]`
 - `await read_mentions(account_handle: str, hours_back: int = 2, limit: int = 120, ...)`
 - `await profile_recent_metrics(username: str, limit: int = 40) -> list[dict[str, int | str]]`
 - `await post_metrics(platform_post_id: str) -> dict[str, int]`
@@ -78,6 +80,26 @@ This package exposes one main controller class:
 Convenience helpers:
 
 - `.metrics`: returns `raw["metrics"]` when present
+- `.author_limited`: true when X shows an author-controlled post limit, such as restricted replies
+- `.reply_limited`: true when the detected author limit affects replies
+- `.author_limit_notice`: the detected X notice text, for example `Only some accounts can reply.`
+- `.to_dict()`: returns a serializable copy
+
+`ObservedNotificationData` contains:
+
+- `notification_id`
+- `notification_type`
+- `actor`
+- `text`
+- `raw`
+
+Convenience helpers:
+
+- `.platform_post_id`: returns the linked post id when present
+- `.unread`: returns the best-effort unread flag
+- `.author_limited`: true when X shows an author-controlled post limit on the linked post
+- `.reply_limited`: true when the detected author limit affects replies
+- `.author_limit_notice`: the detected X notice text
 - `.to_dict()`: returns a serializable copy
 
 ## Settings

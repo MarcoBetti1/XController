@@ -11,7 +11,7 @@ It is designed for reuse from scripts and services instead of a single hard-code
 - Persistent Chromium profile sessions
 - Login checks and login-page handoff
 - Home/timeline recovery
-- Timeline, search, mentions, and visible-post reads
+- Timeline, search, notifications, mentions, and visible-post reads
 - Post, view, like, reply, quote, follow, and unfollow actions
 - Image attachments for new posts, replies, and quote posts
 - Verified delete flows for own posts, replies, and reposts
@@ -69,6 +69,7 @@ Primary exports:
 - `XController.XController`
 - `XController.XTextAdapter`
 - `XController.ControllerSettings`
+- `XController.ObservedNotificationData`
 - `XController.ObservedPostData`
 
 Compatibility aliases:
