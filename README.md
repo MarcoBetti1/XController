@@ -12,7 +12,8 @@ It is designed for reuse from scripts and services instead of a single hard-code
 - Login checks and login-page handoff
 - Home/timeline recovery
 - Timeline, search, mentions, and visible-post reads
-- Post, view, like, reply, follow, and unfollow actions
+- Post, view, like, reply, quote, follow, and unfollow actions
+- Image attachments for new posts, replies, and quote posts
 - Verified delete flows for own posts, replies, and reposts
 - Bulk cleanup helpers for posts, replies, reposts, or all content
 - Post metric scraping
@@ -74,6 +75,7 @@ Compatibility aliases:
 
 - `XController` and `XTextAdapter` are the same class.
 - `comment_post()` and `reply_to_post()` are both supported. `reply_to_post()` is the clearer canonical name for X.
+- `post_image()`, `reply_with_image()`, and `quote_post_with_image()` are convenience wrappers around the image-capable post/reply/quote methods.
 
 ## Project Layout
 

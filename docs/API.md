@@ -33,11 +33,15 @@ This package exposes one main controller class:
 
 ## Write / Engagement Operations
 
-- `await post_text(text: str) -> str | None`
+- `await post_text(text: str, image_paths: str | Sequence[str] | None = None) -> str | None`
+- `await post_image(image_paths: str | Sequence[str], text: str = "") -> str | None`
 - `await view_post(platform_post_id: str, dwell_seconds: tuple[int, int] = (3, 8)) -> bool`
 - `await like_post(platform_post_id: str) -> bool`
-- `await reply_to_post(platform_post_id: str, text: str) -> str | None`
-- `await comment_post(platform_post_id: str, text: str) -> str | None`
+- `await reply_to_post(platform_post_id: str, text: str, image_paths: str | Sequence[str] | None = None) -> str | None`
+- `await reply_with_image(platform_post_id: str, image_paths: str | Sequence[str], text: str = "") -> str | None`
+- `await comment_post(platform_post_id: str, text: str, image_paths: str | Sequence[str] | None = None) -> str | None`
+- `await quote_post(platform_post_id: str, text: str = "", image_paths: str | Sequence[str] | None = None) -> str | None`
+- `await quote_post_with_image(platform_post_id: str, image_paths: str | Sequence[str], text: str = "") -> str | None`
 - `await delete_post(platform_post_id: str) -> bool`
 - `await delete_reply(platform_post_id: str) -> bool`
 - `await delete_repost(platform_post_id: str) -> bool`
@@ -53,6 +57,8 @@ This package exposes one main controller class:
 
 - `reply_to_post()` is the canonical X-specific method name.
 - `comment_post()` is kept for backward compatibility and delegates to the same reply implementation.
+- `post_text()`, `reply_to_post()`, and `quote_post()` accept `image_paths` for local image uploads.
+  Convenience wrappers are available when the image is the primary payload.
 - `recover_home()` and `refresh_home()` are intentionally both kept.
   `recover_home()` is lighter-weight.
   `refresh_home()` includes a reload attempt.

@@ -12,7 +12,7 @@ from functools import partial
 import asyncio
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as SyncPage, sync_playwright as sync_playwright
@@ -22,6 +22,9 @@ from .human import HumanMotion
 from .base import ObservedPostData, SocialPlatformAdapter
 
 logger = logging.getLogger("x_controller.adapter")
+
+ImagePath = str | os.PathLike[str]
+ImagePathInput = ImagePath | Sequence[ImagePath]
 
 
 class XTextAdapter(SocialPlatformAdapter):
@@ -128,6 +131,30 @@ class XTextAdapter(SocialPlatformAdapter):
         'button[data-testid="tweetButton"]',
         'button:has-text("Post")',
         'button:has-text("Reply")',
+    ]
+    MAX_IMAGES_PER_POST = 4
+    SUPPORTED_IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
+    MEDIA_INPUT_SELECTORS = [
+        'input[data-testid="fileInput"][type="file"]',
+        'input[type="file"][accept*="image"]',
+        'input[type="file"]',
+    ]
+    MEDIA_PREVIEW_SELECTORS = [
+        '[data-testid="attachments"]',
+        '[data-testid="tweetPhoto"]',
+        '[data-testid="media-preview"]',
+        'img[alt="Image"]',
+        'img[src^="blob:"]',
+        'video[src^="blob:"]',
+        '[aria-label="Image"]',
+        '[aria-label*="Image"]',
+    ]
+    QUOTE_MENU_ITEMS = [
+        '[role="menuitem"]:has-text("Quote")',
+        '[role="menuitem"]:has-text("Quote post")',
+        '[role="menuitem"]:has-text("Quote Post")',
+        'a[href*="/compose/"][href*="tweet_id"]',
+        'a[href*="/compose/"][href*="quote"]',
     ]
 
     LIKE_BUTTONS = [
@@ -579,6 +606,72 @@ class XTextAdapter(SocialPlatformAdapter):
             if random.random() < 0.02:
                 time.sleep(random.uniform(20, 220) / 1000.0)
 
+    async def _set_input_files(self, locator: Any, files: list[str], timeout_ms: int = 6000) -> None:
+        if self._sync_mode:
+            await self._run_sync(locator.set_input_files, files, timeout=timeout_ms)
+            return
+        await locator.set_input_files(files, timeout=timeout_ms)
+
+    async def _composer_scopes_for_textbox(self, textbox: Any | None, include_page: bool = True) -> list[Any]:
+        scopes: list[Any] = []
+        if textbox is not None:
+            for xpath in (
+                "ancestor::*[@role='dialog'][1]",
+                "ancestor::*[self::form or self::article][1]",
+            ):
+                with contextlib.suppress(Exception):
+                    scope = textbox.locator(f"xpath={xpath}").first
+                    if await self._count_locator(scope):
+                        scopes.append(scope)
+        if include_page and self.page:
+            scopes.append(self.page)
+        return scopes
+
+    async def _find_media_input_for_composer(self, textbox: Any | None, timeout_ms: int = 3000) -> Any | None:
+        deadline = time.monotonic() + (max(0, timeout_ms) / 1000.0)
+        while True:
+            for scope in await self._composer_scopes_for_textbox(textbox):
+                for selector in self.MEDIA_INPUT_SELECTORS:
+                    with contextlib.suppress(Exception):
+                        locator = scope.locator(selector)
+                        if await self._count_locator(locator):
+                            return locator.first
+            if timeout_ms <= 0 or time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.16)
+
+    async def _wait_for_media_attachment(self, textbox: Any | None, timeout_seconds: float = 12.0) -> bool:
+        deadline = time.monotonic() + max(1.0, timeout_seconds)
+        while time.monotonic() < deadline:
+            scopes = await self._composer_scopes_for_textbox(textbox, include_page=False)
+            if not scopes and self.page:
+                scopes = [self.page]
+            for scope in scopes:
+                for selector in self.MEDIA_PREVIEW_SELECTORS:
+                    with contextlib.suppress(Exception):
+                        if await self._count_locator(scope.locator(selector)):
+                            return True
+            await asyncio.sleep(0.25)
+        return False
+
+    async def _attach_images_to_composer(self, textbox: Any | None, image_paths: list[str]) -> bool:
+        if not image_paths:
+            return True
+        media_input = await self._find_media_input_for_composer(textbox, timeout_ms=3500)
+        if not media_input:
+            logger.warning("media_file_input_not_found count=%s", len(image_paths))
+            return False
+        try:
+            await self._set_input_files(media_input, image_paths)
+            await self.human.jitter(650, 1500)
+            if await self._wait_for_media_attachment(textbox):
+                return True
+            logger.warning("media_upload_preview_not_found count=%s", len(image_paths))
+            return False
+        except Exception as exc:
+            logger.warning("media_upload_failed count=%s error=%s", len(image_paths), str(exc)[:260])
+            return False
+
     async def _random_scroll(self, *steps: int) -> None:
         if self._sync_mode:
             await self._run_sync(self._random_scroll_sync, *steps)
@@ -811,6 +904,32 @@ class XTextAdapter(SocialPlatformAdapter):
 
     def _normalize_username(self, username: str) -> str:
         return str(username or "").strip().lstrip("@")
+
+    def _normalize_image_paths(self, image_paths: ImagePathInput | None) -> list[str]:
+        if image_paths is None:
+            return []
+        if isinstance(image_paths, (str, os.PathLike)):
+            candidates = [image_paths]
+        else:
+            candidates = list(image_paths)
+
+        if len(candidates) > self.MAX_IMAGES_PER_POST:
+            raise ValueError(f"X image posts support up to {self.MAX_IMAGES_PER_POST} images")
+
+        normalized: list[str] = []
+        for candidate in candidates:
+            path = Path(candidate).expanduser()
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            else:
+                path = path.resolve()
+            if not path.is_file():
+                raise FileNotFoundError(f"Image file does not exist: {path}")
+            if path.suffix.lower() not in self.SUPPORTED_IMAGE_EXTENSIONS:
+                supported = ", ".join(sorted(self.SUPPORTED_IMAGE_EXTENSIONS))
+                raise ValueError(f"Unsupported image extension for X upload: {path.suffix or '<none>'}. Supported: {supported}")
+            normalized.append(str(path))
+        return normalized
 
     async def _is_compose_state(self) -> bool:
         if not self.page:
@@ -1240,6 +1359,45 @@ class XTextAdapter(SocialPlatformAdapter):
             box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=1400)
             if box:
                 return box
+        return None
+
+    async def _open_quote_box_in_current_context(self, platform_post_id: str, scan_rounds: int = 2) -> Any | None:
+        if not self.page:
+            return None
+        article = await self._find_post_article_in_context(platform_post_id, scan_rounds=max(1, scan_rounds))
+        repost_btn = None
+        if article:
+            repost_btn = await self._find_first_in_scope(
+                article,
+                self.REPOST_BUTTONS,
+                timeout_ms=1400,
+                require_enabled=True,
+            )
+        post_id = self._normalize_post_id(platform_post_id)
+        if not repost_btn and post_id and f"/status/{post_id}" in (self.page.url or ""):
+            repost_btn = await self._find_first_enabled(self.REPOST_BUTTONS, timeout_ms=1200)
+        if not repost_btn:
+            return None
+
+        await self._click(repost_btn)
+        await self.human.jitter(220, 700)
+        quote_item = await self._find_first_enabled(self.QUOTE_MENU_ITEMS, timeout_ms=2600)
+        if not quote_item:
+            quote_item = await self._find_first(self.QUOTE_MENU_ITEMS, timeout_ms=800)
+        if not quote_item:
+            logger.warning("quote_menu_item_not_found target=%s", post_id or platform_post_id)
+            with contextlib.suppress(Exception):
+                await self._keyboard_press("Escape")
+                await self.human.jitter(120, 360)
+            return None
+        await self._click(quote_item)
+        await self.human.jitter(350, 1000)
+        box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=3200)
+        if box:
+            return box
+        with contextlib.suppress(Exception):
+            await self._keyboard_press("Escape")
+            await self.human.jitter(120, 360)
         return None
 
     async def _looks_like_home_timeline(self) -> bool:
@@ -2226,7 +2384,7 @@ class XTextAdapter(SocialPlatformAdapter):
         except Exception:
             pass
 
-    async def post_text(self, text: str) -> str | None:
+    async def _post_from_compose(self, text: str, image_paths: list[str]) -> str | None:
         if not self.page:
             return None
         box = await self._open_compose_box()
@@ -2236,6 +2394,9 @@ class XTextAdapter(SocialPlatformAdapter):
         await self._move_mouse()
         await self._clear_textbox(box)
         await self._type_text(box, text)
+        if not await self._attach_images_to_composer(box, image_paths):
+            logger.warning("post_text_media_attach_failed count=%s", len(image_paths))
+            return None
         await self.human.jitter(280, 820)
         submitted = await self._submit_post()
         if not submitted:
@@ -2246,6 +2407,16 @@ class XTextAdapter(SocialPlatformAdapter):
         if not post_id:
             logger.info("post_text_submitted_unknown_post_id")
         return post_id
+
+    async def post_text(self, text: str, image_paths: ImagePathInput | None = None) -> str | None:
+        image_files = self._normalize_image_paths(image_paths)
+        return await self._post_from_compose(text, image_files)
+
+    async def post_image(self, image_paths: ImagePathInput, text: str = "") -> str | None:
+        image_files = self._normalize_image_paths(image_paths)
+        if not image_files:
+            raise ValueError("At least one image path is required")
+        return await self._post_from_compose(text, image_files)
 
     async def engage_post(
         self,
@@ -2315,12 +2486,75 @@ class XTextAdapter(SocialPlatformAdapter):
         result = await self.engage_post(platform_post_id, do_view=True, do_like=False, dwell_seconds=dwell_seconds)
         return bool(result.get("viewed"))
 
-    async def _reply_to_post_impl(self, platform_post_id: str, text: str) -> str | None:
+    async def quote_post(
+        self,
+        platform_post_id: str,
+        text: str = "",
+        image_paths: ImagePathInput | None = None,
+    ) -> str | None:
         if not self.page:
             return None
         post_id = self._normalize_post_id(platform_post_id)
         if not post_id:
             return None
+        image_files = self._normalize_image_paths(image_paths)
+        try:
+            if not await self._open_post_page(post_id):
+                return None
+            box = await self._open_quote_box_in_current_context(post_id)
+            if not box:
+                logger.warning("quote_composer_not_found target=%s; falling back to status-url post", post_id)
+                quote_url = f"{self.BASE_URL}/i/web/status/{post_id}"
+                body = f"{text.rstrip()}\n{quote_url}" if text.strip() else quote_url
+                return await self._post_from_compose(body, image_files)
+
+            await self._move_mouse()
+            await self._clear_textbox(box)
+            await self._type_text(box, text)
+            if not await self._attach_images_to_composer(box, image_files):
+                logger.warning("quote_media_attach_failed target=%s count=%s", post_id, len(image_files))
+                return None
+            await self.human.jitter(280, 820)
+            submitted = await self._submit_post()
+            if not submitted:
+                logger.warning("quote_submit_failed_after_retries target=%s", post_id)
+                return None
+            await self.human.jitter(900, 1700)
+            quote_id = await self._guess_recent_post_id()
+            if quote_id and quote_id != post_id:
+                return quote_id
+            return "unknown_quote_id"
+        except Exception as exc:
+            if self._is_driver_connection_closed(exc):
+                raise RuntimeError("playwright_driver_connection_closed") from exc
+            if self._is_target_closed_error(exc):
+                raise RuntimeError("target_page_or_context_closed") from exc
+            logger.warning("quote_post_failed target=%s error=%s", post_id, str(exc)[:260])
+            return None
+
+    async def quote_post_with_image(
+        self,
+        platform_post_id: str,
+        image_paths: ImagePathInput,
+        text: str = "",
+    ) -> str | None:
+        image_files = self._normalize_image_paths(image_paths)
+        if not image_files:
+            raise ValueError("At least one image path is required")
+        return await self.quote_post(platform_post_id, text=text, image_paths=image_files)
+
+    async def _reply_to_post_impl(
+        self,
+        platform_post_id: str,
+        text: str,
+        image_paths: ImagePathInput | None = None,
+    ) -> str | None:
+        if not self.page:
+            return None
+        post_id = self._normalize_post_id(platform_post_id)
+        if not post_id:
+            return None
+        image_files = self._normalize_image_paths(image_paths)
         try:
             for attempt in range(1, 4):
                 box = await self._open_reply_box_in_current_context(post_id, scan_rounds=min(4, attempt + 1))
@@ -2333,6 +2567,15 @@ class XTextAdapter(SocialPlatformAdapter):
 
                 await self._clear_textbox(box)
                 await self._type_text(box, text)
+                if not await self._attach_images_to_composer(box, image_files):
+                    logger.warning(
+                        "reply_media_attach_failed target=%s attempt=%s count=%s",
+                        post_id,
+                        attempt,
+                        len(image_files),
+                    )
+                    await self._dismiss_reply_ui()
+                    continue
                 send = await self._find_reply_submit_button(box, timeout_ms=1800)
                 submitted = False
                 if send:
@@ -2409,11 +2652,27 @@ class XTextAdapter(SocialPlatformAdapter):
             logger.warning("reply_action_failed target=%s error=%s", post_id, str(exc)[:260])
             return None
 
-    async def comment_post(self, platform_post_id: str, text: str) -> str | None:
-        return await self._reply_to_post_impl(platform_post_id, text)
+    async def comment_post(
+        self,
+        platform_post_id: str,
+        text: str,
+        image_paths: ImagePathInput | None = None,
+    ) -> str | None:
+        return await self._reply_to_post_impl(platform_post_id, text, image_paths=image_paths)
 
-    async def reply_to_post(self, platform_post_id: str, text: str) -> str | None:
-        return await self._reply_to_post_impl(platform_post_id, text)
+    async def reply_to_post(
+        self,
+        platform_post_id: str,
+        text: str,
+        image_paths: ImagePathInput | None = None,
+    ) -> str | None:
+        return await self._reply_to_post_impl(platform_post_id, text, image_paths=image_paths)
+
+    async def reply_with_image(self, platform_post_id: str, image_paths: ImagePathInput, text: str = "") -> str | None:
+        image_files = self._normalize_image_paths(image_paths)
+        if not image_files:
+            raise ValueError("At least one image path is required")
+        return await self._reply_to_post_impl(platform_post_id, text, image_paths=image_files)
 
     async def _open_article_menu(self, article: Any | None) -> bool:
         target = None
