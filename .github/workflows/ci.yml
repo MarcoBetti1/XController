@@ -39,25 +39,39 @@ jobs:
         shell: bash
         run: |
           python - <<'PY'
+          import re
           import subprocess
           import sys
-          import tomllib
           from pathlib import Path
 
-          project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
-          extras = project.get("project", {}).get("optional-dependencies", {})
+          text = Path("pyproject.toml").read_text(encoding="utf-8")
+          extras = set()
+          in_optional_deps = False
+          for line in text.splitlines():
+              stripped = line.strip()
+              if stripped == "[project.optional-dependencies]":
+                  in_optional_deps = True
+                  continue
+              if in_optional_deps and stripped.startswith("[") and stripped.endswith("]"):
+                  break
+              if in_optional_deps:
+                  match = re.match(r"([A-Za-z0-9_-]+)\s*=\s*\[", stripped)
+                  if match:
+                      extras.add(match.group(1))
           enabled = [name for name in ("lab", "dev") if name in extras]
           target = f'.[{",".join(enabled)}]' if enabled else "."
           subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", target])
           PY
 
       - name: Smoke test public imports
+        shell: bash
         run: |
           python - <<'PY'
           import XController as XController_pkg
-          from XController import ControllerSettings, ObservedPostData, XController as XControllerClass
+          from XController import ActionResult, ControllerSettings, ObservedPostData, XController as XControllerClass
 
           assert XController_pkg.__version__
+          assert ActionResult
           assert ControllerSettings
           assert ObservedPostData
           assert XControllerClass
