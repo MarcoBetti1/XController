@@ -9,6 +9,10 @@ from typing import Any
 class ControllerSettings:
     """Runtime knobs for browser behavior and human-like interaction timing."""
 
+    strict_ui_failures: bool = False
+    playwright_mode: str = "auto"
+    prefer_sync_playwright: bool | None = None
+
     anti_bot_typing_min_ms: int = 40
     anti_bot_typing_max_ms: int = 260
     anti_bot_pause_min_ms: int = 250

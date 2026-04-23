@@ -12,9 +12,13 @@ on:
 
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
         python-version:
           - "3.10"
           - "3.11"
@@ -34,21 +38,40 @@ jobs:
       - name: Install project
         shell: bash
         run: |
-          if grep -q '^lab = \[' pyproject.toml && grep -q '^dev = \[' pyproject.toml; then
-            python -m pip install -e ".[lab,dev]"
-          elif grep -q '^dev = \[' pyproject.toml; then
-            python -m pip install -e ".[dev]"
-          else
-            python -m pip install -e .
-          fi
+          python - <<'PY'
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          text = Path("pyproject.toml").read_text(encoding="utf-8")
+          extras = set()
+          in_optional_deps = False
+          for line in text.splitlines():
+              stripped = line.strip()
+              if stripped == "[project.optional-dependencies]":
+                  in_optional_deps = True
+                  continue
+              if in_optional_deps and stripped.startswith("[") and stripped.endswith("]"):
+                  break
+              if in_optional_deps:
+                  match = re.match(r"([A-Za-z0-9_-]+)\s*=\s*\[", stripped)
+                  if match:
+                      extras.add(match.group(1))
+          enabled = [name for name in ("lab", "dev") if name in extras]
+          target = f'.[{",".join(enabled)}]' if enabled else "."
+          subprocess.check_call([sys.executable, "-m", "pip", "install", "-e", target])
+          PY
 
       - name: Smoke test public imports
+        shell: bash
         run: |
           python - <<'PY'
           import XController as XController_pkg
-          from XController import ControllerSettings, ObservedPostData, XController as XControllerClass
+          from XController import ActionResult, ControllerSettings, ObservedPostData, XController as XControllerClass
 
           assert XController_pkg.__version__
+          assert ActionResult
           assert ControllerSettings
           assert ObservedPostData
           assert XControllerClass
@@ -60,8 +83,15 @@ jobs:
       - name: Run unittest suite when present
         shell: bash
         run: |
-          if compgen -G "tests/*.py" > /dev/null; then
-            python -m unittest discover -s tests -p "test_*.py"
-          else
-            echo "No tests on this branch."
-          fi
+          python - <<'PY'
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          tests_dir = Path("tests")
+          has_tests = tests_dir.is_dir() and any(tests_dir.glob("test_*.py"))
+          if has_tests:
+              subprocess.check_call([sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"])
+          else:
+              print("No tests on this branch.")
+          PY

@@ -1,7 +1,18 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .adapter import XController, XTextAdapter
-from .base import ObservedNotificationData, ObservedPostData, SocialPlatformAdapter
+from ._diagnostics import ActionFailureInfo, UIActionError
+from .base import (
+    ActionPreflight,
+    ActionResult,
+    ControllerHealth,
+    MediaPreflight,
+    ObservedMediaData,
+    ObservedNotificationData,
+    ObservedPostData,
+    SocialPlatformAdapter,
+    TimelineReadResult,
+)
 from .settings import ControllerSettings
 
 try:
@@ -10,10 +21,18 @@ except PackageNotFoundError:
     __version__ = "0.1.0"
 
 __all__ = [
+    "ActionFailureInfo",
+    "ActionPreflight",
+    "ActionResult",
     "ControllerSettings",
+    "ControllerHealth",
+    "MediaPreflight",
+    "ObservedMediaData",
     "ObservedNotificationData",
     "ObservedPostData",
     "SocialPlatformAdapter",
+    "TimelineReadResult",
+    "UIActionError",
     "XController",
     "XTextAdapter",
     "__version__",
