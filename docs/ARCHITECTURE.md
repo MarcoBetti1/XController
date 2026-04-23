@@ -9,6 +9,8 @@ The package is structured around one stateful adapter that owns:
 - shared DOM interaction helpers
 - X-specific navigation and action flows
 
+The DOM selector surface and soft-failure diagnostics are now split into dedicated internal modules so the adapter remains the orchestrator instead of also being the source of truth for every selector and diagnostic type.
+
 The library favors click-driven navigation first and uses direct URL navigation as a recovery path.
 
 `main` intentionally contains only the reusable controller package. Lab UI, lab API, and test harness files belong on `labui-testing`.
@@ -17,6 +19,10 @@ The library favors click-driven navigation first and uses direct URL navigation 
 
 - `adapter.py`
   Main controller implementation and X-specific flow logic.
+- `_ui_selectors.py`
+  Centralized selector and UI rule tables for X-specific DOM matching.
+- `_diagnostics.py`
+  `ActionFailureInfo` and `UIActionError` used to surface soft UI failures.
 - `base.py`
   Shared adapter contract and the `ObservedPostData` model.
 - `settings.py`
@@ -34,6 +40,15 @@ Inside `XController`, methods now fall into clearer buckets:
 - navigation helpers
 - post collection/parsing helpers
 - public read/write actions
+
+The current maintenance boundary is:
+
+- `_ui_selectors.py`
+  Selector drift and X wording changes.
+- `adapter.py`
+  Flow orchestration, retries, and state transitions.
+- `_diagnostics.py`
+  Soft-failure recording and strict-mode escalation.
 
 The main cleanup rule applied here was: keep the public behavior stable, but consolidate duplicate internal logic where possible.
 
@@ -61,4 +76,5 @@ This repository uses a flat package layout where the package root is the project
 
 - Split non-X-specific browser helpers into a reusable internal module if another platform adapter is added.
 - Keep automated tests on `labui-testing`, or add a small core-only test set back to `main` if the downstream integration path needs it.
+- Keep the runtime smoke tests in `main`; they now cover sync lifecycle behavior and soft-failure diagnostics without launching a real browser.
 - Introduce semantic version tags once the API is stable enough for third-party consumers.

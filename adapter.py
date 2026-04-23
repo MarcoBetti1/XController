@@ -18,9 +18,11 @@ from typing import Any, Callable, Sequence
 from playwright.async_api import BrowserContext, Page, async_playwright
 from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as SyncPage, sync_playwright as sync_playwright
 
-from .settings import ControllerSettings
-from .human import HumanMotion
+from . import _ui_selectors as ui
+from ._diagnostics import ActionFailureInfo, UIActionError
 from .base import ObservedNotificationData, ObservedPostData, SocialPlatformAdapter
+from .human import HumanMotion
+from .settings import ControllerSettings
 
 logger = logging.getLogger("XController.adapter")
 
@@ -38,229 +40,7 @@ class XTextAdapter(SocialPlatformAdapter):
     STATUS_URL_RE = re.compile(r"/status/([0-9]+)")
     PROFILE_URL_RE = re.compile(r"https?://(?:www\.)?x\.com/([^/?#]+)$")
     HANDLE_TEXT_RE = re.compile(r"@([A-Za-z0-9_]{1,15})")
-    REPLY_LIMIT_NOTICE_PATTERNS = [
-        re.compile(r"\bonly some accounts can reply\.?", re.IGNORECASE),
-        re.compile(
-            r"\b(?:post )?author\b.{0,80}\blimit(?:s|ed)?\b.{0,80}\b(?:who can reply|replies?)\.?",
-            re.IGNORECASE,
-        ),
-        re.compile(r"\blimit(?:s|ed)?\b.{0,80}\bwho can reply\.?", re.IGNORECASE),
-        re.compile(
-            r"\bonly (?:subscribed|subscribers|premium subscribers|verified accounts|accounts from selected regions|"
-            r"accounts you mention|accounts you mentioned|your subscribers|your followers|your circle)\b.{0,80}\bcan reply\.?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\baccounts\b.{0,120}\b(?:following|follows|follow|mentioned|subscribed)\b.{0,120}\bcan reply\.?",
-            re.IGNORECASE,
-        ),
-        re.compile(
-            r"\bverified accounts or accounts mentioned by @?[A-Za-z0-9_]{1,15}\b.{0,40}\bcan reply\.?",
-            re.IGNORECASE,
-        ),
-    ]
-    REPLY_LIMIT_BLOCKED_PATTERNS = [
-        re.compile(r"\byou cannot reply to this conversation\.?", re.IGNORECASE),
-        re.compile(r"\byou cannot post or quote external links in replies to this post\.?", re.IGNORECASE),
-    ]
-    RESERVED_PROFILE_PATHS = {
-        "",
-        "compose",
-        "explore",
-        "home",
-        "i",
-        "login",
-        "messages",
-        "notifications",
-        "search",
-        "settings",
-    }
-    LOGIN_SELECTORS = [
-        'input[name="text"]',
-        'input[name="password"]',
-        'text=Sign in',
-        'a[href="/i/flow/login"]',
-    ]
-    HOME_SELECTORS = [
-        'a[data-testid="AppTabBar_Home_Link"][aria-current="page"]',
-        'a[href="/home"][aria-current="page"]',
-        'a[data-testid="AppTabBar_Home_Link"]',
-        'a[href="/home"]',
-    ]
-    HOME_ENTRY_SELECTORS = [
-        'a[data-testid="AppTabBar_Home_Link"]',
-        'a[href="/home"]',
-        'a[aria-label*="Home"]',
-    ]
-    PROFILE_ENTRY_SELECTORS = [
-        'a[data-testid="AppTabBar_Profile_Link"]',
-        'a[aria-label*="Profile"]',
-        'a[href^="/"][data-testid="SideNav_AccountSwitcher_Button"]',
-    ]
-    LOGGED_IN_SELECTORS = [
-        '[data-testid="SideNav_AccountSwitcher_Button"]',
-        'a[data-testid="AppTabBar_Home_Link"]',
-        '[data-testid="SideNav_NewTweet_Button"]',
-    ]
-    SEARCH_ENTRY_SELECTORS = [
-        'a[data-testid="AppTabBar_Explore_Link"]',
-        'a[href="/explore"]',
-        'a[aria-label*="Search and Explore"]',
-    ]
-    NOTIFICATIONS_ENTRY_SELECTORS = [
-        'a[data-testid="AppTabBar_Notifications_Link"]',
-        'a[href="/notifications"]',
-        'a[aria-label*="Notifications"]',
-    ]
-    NOTIFICATIONS_ACTIVE_SELECTORS = [
-        'a[data-testid="AppTabBar_Notifications_Link"][aria-current="page"]',
-        'a[href="/notifications"][aria-current="page"]',
-    ]
-    NOTIFICATIONS_MENTIONS_TAB_SELECTORS = [
-        'a[href="/notifications/mentions"]',
-        '[role="tab"]:has-text("Mentions")',
-        'a:has-text("Mentions")',
-    ]
-    NOTIFICATION_UNREAD_SELECTORS = [
-        '[aria-label*="Unread"]',
-        '[data-testid*="unread"]',
-        '[data-testid*="Unread"]',
-    ]
-    SEARCH_INPUT_SELECTORS = [
-        'input[data-testid="SearchBox_Search_Input"]',
-        'input[aria-label="Search query"]',
-        'input[placeholder*="Search"]',
-    ]
-    SEARCH_TAB_LATEST_SELECTORS = [
-        'a[href*="&f=live"]',
-        'a:has-text("Latest")',
-        '[role="tab"]:has-text("Latest")',
-    ]
-    SEARCH_TAB_TOP_SELECTORS = [
-        'a[href*="&f=top"]',
-        'a:has-text("Top")',
-        '[role="tab"]:has-text("Top")',
-    ]
-
-    COMPOSE_BUTTONS = [
-        'a[aria-label="Post"]',
-        '[href="/compose/tweet"]',
-        '[data-testid="SideNav_NewTweet_Button"]',
-        '[data-testid="SideNav_Write_Post_Button"]',
-    ]
-
-    COMPOSE_TEXTBOXES = [
-        '[data-testid="tweetTextarea_0"]',
-        '[data-testid="tweetTextarea_1"]',
-        'div[role="textbox"]',
-        '[contenteditable="true"]',
-    ]
-
-    POST_BUTTONS = [
-        '[data-testid="tweetButtonInline"]',
-        '[data-testid="tweetButton"]',
-        'button[data-testid="tweetButton"]',
-        'button:has-text("Post")',
-        'button:has-text("Reply")',
-    ]
-    MAX_IMAGES_PER_POST = 4
-    SUPPORTED_IMAGE_EXTENSIONS = {".gif", ".jpeg", ".jpg", ".png", ".webp"}
-    MEDIA_INPUT_SELECTORS = [
-        'input[data-testid="fileInput"][type="file"]',
-        'input[type="file"][accept*="image"]',
-        'input[type="file"]',
-    ]
-    MEDIA_PREVIEW_SELECTORS = [
-        '[data-testid="attachments"]',
-        '[data-testid="tweetPhoto"]',
-        '[data-testid="media-preview"]',
-        'img[alt="Image"]',
-        'img[src^="blob:"]',
-        'video[src^="blob:"]',
-        '[aria-label="Image"]',
-        '[aria-label*="Image"]',
-    ]
-    QUOTE_MENU_ITEMS = [
-        '[role="menuitem"]:has-text("Quote")',
-        '[role="menuitem"]:has-text("Quote post")',
-        '[role="menuitem"]:has-text("Quote Post")',
-        'a[href*="/compose/"][href*="tweet_id"]',
-        'a[href*="/compose/"][href*="quote"]',
-    ]
-
-    LIKE_BUTTONS = [
-        '[data-testid="like"]',
-        'button[aria-label^="Like"]',
-        'button[aria-label*="Like"]',
-    ]
-
-    COMMENT_BUTTONS = [
-        '[data-testid="reply"]',
-        'button[aria-label^="Reply"]',
-        'button[aria-label*="Reply"]',
-    ]
-    POST_MENU_BUTTONS = [
-        '[data-testid="caret"]',
-        'button[aria-label="More"]',
-        'button[aria-label*="More"]',
-    ]
-    DELETE_MENU_ITEMS = [
-        '[role="menuitem"]:has-text("Delete")',
-        '[role="menuitem"]:has-text("Delete post")',
-        '[role="menuitem"]:has-text("Delete reply")',
-    ]
-    DELETE_CONFIRM_BUTTONS = [
-        '[data-testid="confirmationSheetConfirm"]',
-        'button:has-text("Delete")',
-        '[role="button"]:has-text("Delete")',
-    ]
-    BACK_BUTTONS = [
-        'button[data-testid="app-bar-back"]',
-        'button[aria-label="Back"]',
-    ]
-    REPLY_SEND_BUTTONS = [
-        'button[data-testid="tweetButton"]',
-        '[data-testid="tweetButton"]',
-        'button[data-testid="tweetButtonInline"]',
-        '[data-testid="tweetButtonInline"]',
-        'button:has-text("Reply")',
-    ]
-    REPLY_AUDIENCE_MODAL_SELECTORS = [
-        '[role="dialog"]:has([data-testid="app-bar-close"]):has(h2:has-text("Replying to")):has(button:has-text("Done"))',
-        '[role="dialog"]:has([data-testid="app-bar-close"]):has(#modal-header):has(button:has-text("Done"))',
-    ]
-    REPLY_AUDIENCE_DONE_BUTTONS = [
-        'button:has-text("Done")',
-        '[role="button"]:has-text("Done")',
-    ]
-    REPLY_CLOSE_BUTTONS = [
-        'button[data-testid="app-bar-close"]',
-        'button[aria-label="Close"]',
-    ]
-
-    LIKE_ACTIVE_BUTTONS = [
-        '[data-testid="unlike"]',
-        'button[aria-label^="Unlike"]',
-        'button[aria-label*="Unlike"]',
-    ]
-    REPOST_BUTTONS = [
-        '[data-testid="retweet"]',
-        'button[aria-label^="Repost"]',
-        'button[aria-label*="Repost"]',
-    ]
-    REPOST_ACTIVE_BUTTONS = [
-        '[data-testid="unretweet"]',
-        'button[aria-label^="Undo repost"]',
-        'button[aria-label*="Undo repost"]',
-        'button[aria-label^="Reposted"]',
-        'button[aria-label*="Reposted"]',
-    ]
-    UNDO_REPOST_BUTTONS = [
-        '[data-testid="unretweetConfirm"]',
-        '[role="menuitem"]:has-text("Undo Repost")',
-        'button:has-text("Undo Repost")',
-        '[role="button"]:has-text("Undo Repost")',
-    ]
+    PROGRAMMER_ERROR_TYPES = (AssertionError, AttributeError, KeyError, TypeError)
 
     def __init__(self, profile_path: str, settings: Any | None = None, proxy: str | None = None):
         self.settings = ControllerSettings.from_any(settings)
@@ -282,6 +62,7 @@ class XTextAdapter(SocialPlatformAdapter):
             thread_name_prefix="social-agent-playwright",
         )
         self._authenticated_handle: str | None = None
+        self.last_action_error: ActionFailureInfo | None = None
         self.human = HumanMotion(self.settings)
 
     async def start(self) -> None:
@@ -461,6 +242,38 @@ class XTextAdapter(SocialPlatformAdapter):
             or "process singleton" in text
             or "profile_in_use" in text
         )
+
+    def _clear_action_error(self) -> None:
+        self.last_action_error = None
+
+    def _record_action_error(self, action: str, exc: Exception, *, selector: str = "") -> None:
+        failure = ActionFailureInfo(
+            action=action,
+            error_type=type(exc).__name__,
+            message=str(exc)[:260],
+            url=self.page.url if self.page else "",
+            selector=selector,
+        )
+        self.last_action_error = failure
+        logger.warning(
+            "ui_action_failed action=%s type=%s url=%s selector=%s error=%s",
+            failure.action,
+            failure.error_type,
+            failure.url,
+            failure.selector or "-",
+            failure.message,
+        )
+        if self.settings.strict_ui_failures:
+            raise UIActionError(failure) from exc
+
+    def _handle_soft_ui_error(self, action: str, exc: Exception, *, selector: str = "") -> None:
+        if isinstance(exc, self.PROGRAMMER_ERROR_TYPES):
+            raise
+        if self._is_driver_connection_closed(exc):
+            raise RuntimeError("playwright_driver_connection_closed") from exc
+        if self._is_target_closed_error(exc):
+            raise RuntimeError("target_page_or_context_closed") from exc
+        self._record_action_error(action, exc, selector=selector)
 
     async def _wait_network_idle(self, ms: int) -> None:
         if not self.page:
@@ -662,7 +475,7 @@ class XTextAdapter(SocialPlatformAdapter):
         deadline = time.monotonic() + (max(0, timeout_ms) / 1000.0)
         while True:
             for scope in await self._composer_scopes_for_textbox(textbox):
-                for selector in self.MEDIA_INPUT_SELECTORS:
+                for selector in ui.MEDIA_INPUT_SELECTORS:
                     with contextlib.suppress(Exception):
                         locator = scope.locator(selector)
                         if await self._count_locator(locator):
@@ -678,7 +491,7 @@ class XTextAdapter(SocialPlatformAdapter):
             if not scopes and self.page:
                 scopes = [self.page]
             for scope in scopes:
-                for selector in self.MEDIA_PREVIEW_SELECTORS:
+                for selector in ui.MEDIA_PREVIEW_SELECTORS:
                     with contextlib.suppress(Exception):
                         if await self._count_locator(scope.locator(selector)):
                             return True
@@ -907,7 +720,7 @@ class XTextAdapter(SocialPlatformAdapter):
     async def _go_back(self) -> None:
         if not self.page:
             return
-        back_btn = await self._find_first(self.BACK_BUTTONS, timeout_ms=900)
+        back_btn = await self._find_first(ui.BACK_BUTTONS, timeout_ms=900)
         if back_btn:
             with contextlib.suppress(Exception):
                 await self._click(back_btn)
@@ -944,8 +757,8 @@ class XTextAdapter(SocialPlatformAdapter):
         else:
             candidates = list(image_paths)
 
-        if len(candidates) > self.MAX_IMAGES_PER_POST:
-            raise ValueError(f"X image posts support up to {self.MAX_IMAGES_PER_POST} images")
+        if len(candidates) > ui.MAX_IMAGES_PER_POST:
+            raise ValueError(f"X image posts support up to {ui.MAX_IMAGES_PER_POST} images")
 
         normalized: list[str] = []
         for candidate in candidates:
@@ -956,8 +769,8 @@ class XTextAdapter(SocialPlatformAdapter):
                 path = path.resolve()
             if not path.is_file():
                 raise FileNotFoundError(f"Image file does not exist: {path}")
-            if path.suffix.lower() not in self.SUPPORTED_IMAGE_EXTENSIONS:
-                supported = ", ".join(sorted(self.SUPPORTED_IMAGE_EXTENSIONS))
+            if path.suffix.lower() not in ui.SUPPORTED_IMAGE_EXTENSIONS:
+                supported = ", ".join(sorted(ui.SUPPORTED_IMAGE_EXTENSIONS))
                 raise ValueError(f"Unsupported image extension for X upload: {path.suffix or '<none>'}. Supported: {supported}")
             normalized.append(str(path))
         return normalized
@@ -975,7 +788,7 @@ class XTextAdapter(SocialPlatformAdapter):
         while time.monotonic() < deadline:
             if not await self._is_compose_state():
                 return True
-            post_btn = await self._find_first(self.POST_BUTTONS)
+            post_btn = await self._find_first(ui.POST_BUTTONS)
             if post_btn:
                 disabled = (await self._get_attribute(post_btn, "aria-disabled") or "").strip().lower()
                 if disabled == "true":
@@ -987,7 +800,7 @@ class XTextAdapter(SocialPlatformAdapter):
         if not self.page:
             return False
         for attempt in range(1, 6):
-            post_btn = await self._find_first(self.POST_BUTTONS, timeout_ms=900)
+            post_btn = await self._find_first(ui.POST_BUTTONS, timeout_ms=900)
             if post_btn:
                 disabled = (await self._get_attribute(post_btn, "aria-disabled") or "").strip().lower()
                 if disabled not in {"true", "1"}:
@@ -1025,7 +838,7 @@ class XTextAdapter(SocialPlatformAdapter):
     async def _has_reply_audience_modal(self) -> bool:
         if not self.page:
             return False
-        for modal_selector in self.REPLY_AUDIENCE_MODAL_SELECTORS:
+        for modal_selector in ui.REPLY_AUDIENCE_MODAL_SELECTORS:
             modal = self.page.locator(modal_selector).first
             if not await self._count_locator(modal):
                 continue
@@ -1039,7 +852,7 @@ class XTextAdapter(SocialPlatformAdapter):
         candidates: list[Any] = []
         with contextlib.suppress(Exception):
             candidates.append(modal.get_by_role("button", name=re.compile(r"^\s*Done\s*$", re.IGNORECASE)).first)
-        for selector in self.REPLY_AUDIENCE_DONE_BUTTONS:
+        for selector in ui.REPLY_AUDIENCE_DONE_BUTTONS:
             with contextlib.suppress(Exception):
                 candidates.append(modal.locator(selector).first)
         with contextlib.suppress(Exception):
@@ -1102,7 +915,7 @@ class XTextAdapter(SocialPlatformAdapter):
             return False
         logger.info("reply_audience_modal_detected")
         active_modal = None
-        for modal_selector in self.REPLY_AUDIENCE_MODAL_SELECTORS:
+        for modal_selector in ui.REPLY_AUDIENCE_MODAL_SELECTORS:
             modal = self.page.locator(modal_selector).first
             if not await self._count_locator(modal):
                 continue
@@ -1266,7 +1079,7 @@ class XTextAdapter(SocialPlatformAdapter):
         for scope in scopes:
             btn = await self._find_first_in_scope(
                 scope,
-                self.REPLY_SEND_BUTTONS,
+                ui.REPLY_SEND_BUTTONS,
                 timeout_ms=timeout_ms,
                 require_enabled=True,
             )
@@ -1278,7 +1091,7 @@ class XTextAdapter(SocialPlatformAdapter):
                 logger.info("reply_submit_candidate testid=%s label=%s", testid or "-", label or "-")
             return btn
 
-        return await self._find_first_enabled(self.REPLY_SEND_BUTTONS, timeout_ms=timeout_ms)
+        return await self._find_first_enabled(ui.REPLY_SEND_BUTTONS, timeout_ms=timeout_ms)
 
     async def _like_in_current_context(self, platform_post_id: str) -> bool:
         if not self.page:
@@ -1293,10 +1106,10 @@ class XTextAdapter(SocialPlatformAdapter):
             article = self.page.locator(f'article:has(a[href*="/status/{post_id}"])').first
             if not await self._count_locator(article):
                 article = self.page.locator("article").first
-            active_btn = await self._find_first_in_scope(article, self.LIKE_ACTIVE_BUTTONS, timeout_ms=700)
+            active_btn = await self._find_first_in_scope(article, ui.LIKE_ACTIVE_BUTTONS, timeout_ms=700)
             if active_btn:
                 return True
-            like_btn = await self._find_first_in_scope(article, self.LIKE_BUTTONS, timeout_ms=1200, require_enabled=True)
+            like_btn = await self._find_first_in_scope(article, ui.LIKE_BUTTONS, timeout_ms=1200, require_enabled=True)
             if not like_btn:
                 return False
             await self._click(like_btn)
@@ -1308,12 +1121,12 @@ class XTextAdapter(SocialPlatformAdapter):
         for round_idx in range(scan_rounds):
             article = self.page.locator(f'article:has(a[href*="/status/{post_id}"])').first
             if await self._count_locator(article):
-                active_btn = await self._find_first_in_scope(article, self.LIKE_ACTIVE_BUTTONS, timeout_ms=450)
+                active_btn = await self._find_first_in_scope(article, ui.LIKE_ACTIVE_BUTTONS, timeout_ms=450)
                 if active_btn:
                     return True
                 like_btn = await self._find_first_in_scope(
                     article,
-                    self.LIKE_BUTTONS,
+                    ui.LIKE_BUTTONS,
                     timeout_ms=900,
                     require_enabled=True,
                 )
@@ -1351,7 +1164,7 @@ class XTextAdapter(SocialPlatformAdapter):
     async def _dismiss_reply_ui(self) -> None:
         if not self.page:
             return
-        close_btn = await self._find_first(self.REPLY_CLOSE_BUTTONS, timeout_ms=400)
+        close_btn = await self._find_first(ui.REPLY_CLOSE_BUTTONS, timeout_ms=400)
         if close_btn:
             with contextlib.suppress(Exception):
                 await self._click(close_btn)
@@ -1370,24 +1183,24 @@ class XTextAdapter(SocialPlatformAdapter):
         if article:
             reply_btn = await self._find_first_in_scope(
                 article,
-                self.COMMENT_BUTTONS,
+                ui.COMMENT_BUTTONS,
                 timeout_ms=1100,
                 require_enabled=True,
             )
         if not reply_btn:
             post_id = self._normalize_post_id(platform_post_id)
             if post_id and f"/status/{post_id}" in (self.page.url or ""):
-                reply_btn = await self._find_first_enabled(self.COMMENT_BUTTONS, timeout_ms=900)
+                reply_btn = await self._find_first_enabled(ui.COMMENT_BUTTONS, timeout_ms=900)
         if not reply_btn:
             return None
 
         await self._click(reply_btn)
         await self.human.jitter(280, 900)
-        box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=2600)
+        box = await self._find_first(ui.COMPOSE_TEXTBOXES, timeout_ms=2600)
         if box:
             return box
         if await self._confirm_reply_audience_if_needed():
-            box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=1400)
+            box = await self._find_first(ui.COMPOSE_TEXTBOXES, timeout_ms=1400)
             if box:
                 return box
         return None
@@ -1400,21 +1213,21 @@ class XTextAdapter(SocialPlatformAdapter):
         if article:
             repost_btn = await self._find_first_in_scope(
                 article,
-                self.REPOST_BUTTONS,
+                ui.REPOST_BUTTONS,
                 timeout_ms=1400,
                 require_enabled=True,
             )
         post_id = self._normalize_post_id(platform_post_id)
         if not repost_btn and post_id and f"/status/{post_id}" in (self.page.url or ""):
-            repost_btn = await self._find_first_enabled(self.REPOST_BUTTONS, timeout_ms=1200)
+            repost_btn = await self._find_first_enabled(ui.REPOST_BUTTONS, timeout_ms=1200)
         if not repost_btn:
             return None
 
         await self._click(repost_btn)
         await self.human.jitter(220, 700)
-        quote_item = await self._find_first_enabled(self.QUOTE_MENU_ITEMS, timeout_ms=2600)
+        quote_item = await self._find_first_enabled(ui.QUOTE_MENU_ITEMS, timeout_ms=2600)
         if not quote_item:
-            quote_item = await self._find_first(self.QUOTE_MENU_ITEMS, timeout_ms=800)
+            quote_item = await self._find_first(ui.QUOTE_MENU_ITEMS, timeout_ms=800)
         if not quote_item:
             logger.warning("quote_menu_item_not_found target=%s", post_id or platform_post_id)
             with contextlib.suppress(Exception):
@@ -1423,7 +1236,7 @@ class XTextAdapter(SocialPlatformAdapter):
             return None
         await self._click(quote_item)
         await self.human.jitter(350, 1000)
-        box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=3200)
+        box = await self._find_first(ui.COMPOSE_TEXTBOXES, timeout_ms=3200)
         if box:
             return box
         with contextlib.suppress(Exception):
@@ -1434,7 +1247,7 @@ class XTextAdapter(SocialPlatformAdapter):
     async def _looks_like_home_timeline(self) -> bool:
         if not self.page:
             return False
-        if await self._any_selector(self.HOME_SELECTORS):
+        if await self._any_selector(ui.HOME_SELECTORS):
             return True
         if "/home" in (self.page.url or ""):
             return True
@@ -1453,7 +1266,7 @@ class XTextAdapter(SocialPlatformAdapter):
         url = (self.page.url or "").lower()
         if "/notifications" in url:
             return True
-        return await self._any_selector(self.NOTIFICATIONS_ACTIVE_SELECTORS)
+        return await self._any_selector(ui.NOTIFICATIONS_ACTIVE_SELECTORS)
 
     async def _open_home_via_click(self) -> bool:
         if not self.page:
@@ -1461,7 +1274,7 @@ class XTextAdapter(SocialPlatformAdapter):
         if await self._looks_like_home_timeline():
             return True
         for _ in range(2):
-            home_btn = await self._find_first(self.HOME_ENTRY_SELECTORS, timeout_ms=1200)
+            home_btn = await self._find_first(ui.HOME_ENTRY_SELECTORS, timeout_ms=1200)
             if home_btn:
                 try:
                     await self._click(home_btn)
@@ -1479,7 +1292,7 @@ class XTextAdapter(SocialPlatformAdapter):
         if await self._looks_like_notifications_page():
             return True
         for _ in range(2):
-            bell = await self._find_first(self.NOTIFICATIONS_ENTRY_SELECTORS, timeout_ms=1300)
+            bell = await self._find_first(ui.NOTIFICATIONS_ENTRY_SELECTORS, timeout_ms=1300)
             if not bell:
                 continue
             with contextlib.suppress(Exception):
@@ -1494,7 +1307,7 @@ class XTextAdapter(SocialPlatformAdapter):
         if not self.page:
             return False
         for _ in range(3):
-            tab = await self._find_first(self.NOTIFICATIONS_MENTIONS_TAB_SELECTORS, timeout_ms=1200)
+            tab = await self._find_first(ui.NOTIFICATIONS_MENTIONS_TAB_SELECTORS, timeout_ms=1200)
             if not tab:
                 break
             with contextlib.suppress(Exception):
@@ -1521,6 +1334,7 @@ class XTextAdapter(SocialPlatformAdapter):
     async def _open_search_query(self, query: str) -> bool:
         if not self.page:
             return False
+        self._clear_action_error()
         query_text = (query or "").strip()
         if not query_text:
             return False
@@ -1531,13 +1345,13 @@ class XTextAdapter(SocialPlatformAdapter):
                 with contextlib.suppress(Exception):
                     await self._goto(f"{self.BASE_URL}/home")
 
-        entry = await self._find_first(self.SEARCH_ENTRY_SELECTORS, timeout_ms=1200)
+        entry = await self._find_first(ui.SEARCH_ENTRY_SELECTORS, timeout_ms=1200)
         if entry:
             with contextlib.suppress(Exception):
                 await self._click(entry)
                 await self.human.jitter(180, 480)
 
-        search_box = await self._find_first(self.SEARCH_INPUT_SELECTORS, timeout_ms=2500)
+        search_box = await self._find_first(ui.SEARCH_INPUT_SELECTORS, timeout_ms=2500)
         if not search_box:
             return False
         try:
@@ -1549,16 +1363,22 @@ class XTextAdapter(SocialPlatformAdapter):
             await self.human.jitter(300, 900)
             await self._wait_network_idle(1400)
             return "/search" in ((self.page.url or "").lower())
-        except Exception:
+        except Exception as exc:
+            self._handle_soft_ui_error(
+                "open_search_query",
+                exc,
+                selector=" / ".join(ui.SEARCH_INPUT_SELECTORS),
+            )
             return False
 
     async def _set_search_mode(self, mode: str) -> bool:
         if not self.page:
             return False
+        self._clear_action_error()
         target_mode = (mode or "").strip().lower()
         if target_mode not in {"live", "top"}:
             return False
-        selectors = self.SEARCH_TAB_LATEST_SELECTORS if target_mode == "live" else self.SEARCH_TAB_TOP_SELECTORS
+        selectors = ui.SEARCH_TAB_LATEST_SELECTORS if target_mode == "live" else ui.SEARCH_TAB_TOP_SELECTORS
         tab = await self._find_first(selectors, timeout_ms=1400)
         if not tab:
             return False
@@ -1567,7 +1387,8 @@ class XTextAdapter(SocialPlatformAdapter):
             await self.human.jitter(220, 620)
             await self._wait_network_idle(1200)
             return True
-        except Exception:
+        except Exception as exc:
+            self._handle_soft_ui_error("set_search_mode", exc, selector=" / ".join(selectors))
             return False
 
     async def _open_profile_page(self, username: str) -> bool:
@@ -1608,7 +1429,7 @@ class XTextAdapter(SocialPlatformAdapter):
         path = raw.split("?", 1)[0].split("#", 1)[0].strip("/")
         if not path or "/" in path:
             return ""
-        if path.lower() in self.RESERVED_PROFILE_PATHS:
+        if path.lower() in ui.RESERVED_PROFILE_PATHS:
             return ""
         return self._normalize_username(path)
 
@@ -1622,7 +1443,7 @@ class XTextAdapter(SocialPlatformAdapter):
         if not self.page:
             return None
         for attempt in range(2):
-            for selector in self.PROFILE_ENTRY_SELECTORS:
+            for selector in ui.PROFILE_ENTRY_SELECTORS:
                 locator = self.page.locator(selector).first
                 if not await self._count_locator(locator):
                     continue
@@ -1705,8 +1526,8 @@ class XTextAdapter(SocialPlatformAdapter):
 
     def _extract_article_author_limit_state(self, body: str, social_context: str = "") -> dict[str, Any]:
         raw = "\n".join(part for part in (body, social_context) if part)
-        reply_notice = self._extract_matching_notice(raw, self.REPLY_LIMIT_NOTICE_PATTERNS)
-        reply_blocked_notice = self._extract_matching_notice(raw, self.REPLY_LIMIT_BLOCKED_PATTERNS)
+        reply_notice = self._extract_matching_notice(raw, ui.REPLY_LIMIT_NOTICE_PATTERNS)
+        reply_blocked_notice = self._extract_matching_notice(raw, ui.REPLY_LIMIT_BLOCKED_PATTERNS)
         author_limited = bool(reply_notice or reply_blocked_notice)
         notice = reply_notice or reply_blocked_notice
         limit_type = "reply" if author_limited else ""
@@ -1940,22 +1761,26 @@ class XTextAdapter(SocialPlatformAdapter):
         if not self.page:
             return {"state": "not_started", "url": ""}
         url = self.page.url or ""
-        if any(token in url for token in ("/login", "/i/flow/")) and await self._any_selector(self.LOGIN_SELECTORS):
-            return {"state": "login", "url": url}
-        if "/compose/" in url:
-            return {"state": "compose", "url": url}
-        if self.STATUS_URL_RE.search(url):
-            return {"state": "status", "url": url}
-        if "/notifications" in url:
-            return {"state": "notifications", "url": url}
-        if "/search" in url:
-            return {"state": "search", "url": url}
-        if await self._looks_like_home_timeline():
-            return {"state": "home", "url": url}
-        profile_match = self.PROFILE_URL_RE.search(url)
-        if profile_match:
-            return {"state": "profile", "url": url}
-        return {"state": "unknown", "url": url}
+        state: dict[str, str]
+        if any(token in url for token in ("/login", "/i/flow/")) and await self._any_selector(ui.LOGIN_SELECTORS):
+            state = {"state": "login", "url": url}
+        elif "/compose/" in url:
+            state = {"state": "compose", "url": url}
+        elif self.STATUS_URL_RE.search(url):
+            state = {"state": "status", "url": url}
+        elif "/notifications" in url:
+            state = {"state": "notifications", "url": url}
+        elif "/search" in url:
+            state = {"state": "search", "url": url}
+        elif await self._looks_like_home_timeline():
+            state = {"state": "home", "url": url}
+        elif self.PROFILE_URL_RE.search(url):
+            state = {"state": "profile", "url": url}
+        else:
+            state = {"state": "unknown", "url": url}
+        if self.last_action_error:
+            state["last_action_error"] = self.last_action_error.summary
+        return state
 
     async def is_logged_in(self) -> bool:
         if not self.page:
@@ -1963,12 +1788,12 @@ class XTextAdapter(SocialPlatformAdapter):
         if not await self._open_home_via_click():
             await self._goto(f"{self.BASE_URL}/home")
         current_url = self.page.url or ""
-        login_markers_visible = await self._any_selector(self.LOGIN_SELECTORS)
+        login_markers_visible = await self._any_selector(ui.LOGIN_SELECTORS)
         if login_markers_visible and any(token in current_url for token in ("/login", "/i/flow/")):
             return False
         if any(token in current_url for token in ("/login", "/i/flow/")) and not await self._looks_like_home_timeline():
             return False
-        if await self._any_selector(self.LOGGED_IN_SELECTORS):
+        if await self._any_selector(ui.LOGGED_IN_SELECTORS):
             return True
         if await self._looks_like_home_timeline():
             return not login_markers_visible
@@ -2093,7 +1918,7 @@ class XTextAdapter(SocialPlatformAdapter):
     async def _notification_article_unread(self, article: Any) -> bool:
         if not article:
             return False
-        for selector in self.NOTIFICATION_UNREAD_SELECTORS:
+        for selector in ui.NOTIFICATION_UNREAD_SELECTORS:
             with contextlib.suppress(Exception):
                 marker = article.locator(selector).first
                 if await self._count_locator(marker):
@@ -2601,12 +2426,12 @@ class XTextAdapter(SocialPlatformAdapter):
             if not await self._open_home_via_click():
                 with contextlib.suppress(Exception):
                     await self._goto(f"{self.BASE_URL}/home")
-        compose_btn = await self._find_first(self.COMPOSE_BUTTONS, timeout_ms=2000)
+        compose_btn = await self._find_first(ui.COMPOSE_BUTTONS, timeout_ms=2000)
         if compose_btn:
             try:
                 await self._click(compose_btn)
                 await self.human.jitter(350, 1000)
-                box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=2600)
+                box = await self._find_first(ui.COMPOSE_TEXTBOXES, timeout_ms=2600)
                 if box:
                     return box
             except Exception:
@@ -2620,7 +2445,7 @@ class XTextAdapter(SocialPlatformAdapter):
             except Exception as exc:
                 logger.warning("open_compose_navigation_failed url=%s error=%s", url, str(exc)[:260])
                 continue
-            box = await self._find_first(self.COMPOSE_TEXTBOXES, timeout_ms=2200)
+            box = await self._find_first(ui.COMPOSE_TEXTBOXES, timeout_ms=2200)
             if box:
                 return box
         return None
@@ -2689,14 +2514,14 @@ class XTextAdapter(SocialPlatformAdapter):
                 await self.human.jitter(550, 1500)
                 result["viewed"] = True
             if do_like:
-                btn = await self._find_first(self.LIKE_BUTTONS, timeout_ms=900)
+                btn = await self._find_first(ui.LIKE_BUTTONS, timeout_ms=900)
                 if btn:
                     await self._click(btn)
                     await self.human.jitter(500, 1400)
                     result["liked"] = True
                 else:
                     # Idempotent success when already liked.
-                    result["liked"] = await self._find_first(self.LIKE_ACTIVE_BUTTONS) is not None
+                    result["liked"] = await self._find_first(ui.LIKE_ACTIVE_BUTTONS) is not None
             return result
         except Exception as exc:
             logger.warning("engage_post_failed target=%s error=%s", platform_post_id, str(exc)[:260])
@@ -2880,7 +2705,7 @@ class XTextAdapter(SocialPlatformAdapter):
                 if reply_id and reply_id != post_id:
                     return reply_id
                 # Verify the inline reply control became disabled or the draft cleared.
-                send_after = await self._find_first(self.REPLY_SEND_BUTTONS, timeout_ms=900)
+                send_after = await self._find_first(ui.REPLY_SEND_BUTTONS, timeout_ms=900)
                 if send_after and (not await self._is_button_enabled(send_after)):
                     return "unknown_reply_id"
                 box_text = ""
@@ -2929,12 +2754,12 @@ class XTextAdapter(SocialPlatformAdapter):
         if article is not None:
             target = await self._find_first_in_scope(
                 article,
-                self.POST_MENU_BUTTONS,
+                ui.POST_MENU_BUTTONS,
                 timeout_ms=1400,
                 require_enabled=True,
             )
         if not target:
-            target = await self._find_first_enabled(self.POST_MENU_BUTTONS, timeout_ms=1400)
+            target = await self._find_first_enabled(ui.POST_MENU_BUTTONS, timeout_ms=1400)
         if not target:
             logger.warning("open_article_menu_target_not_found")
             return False
@@ -2974,13 +2799,13 @@ class XTextAdapter(SocialPlatformAdapter):
         if not await self._open_article_menu(article):
             logger.warning("delete_owned_item_menu_open_failed target=%s", post_id)
             return False
-        delete_item = await self._find_first(self.DELETE_MENU_ITEMS, timeout_ms=2400)
+        delete_item = await self._find_first(ui.DELETE_MENU_ITEMS, timeout_ms=2400)
         if not delete_item:
             logger.warning("delete_menu_item_not_found target=%s", post_id)
             return False
         await self._click(delete_item)
         await self.human.jitter(260, 760)
-        confirm = await self._find_first_enabled(self.DELETE_CONFIRM_BUTTONS, timeout_ms=2600)
+        confirm = await self._find_first_enabled(ui.DELETE_CONFIRM_BUTTONS, timeout_ms=2600)
         if not confirm:
             logger.warning("delete_confirm_button_not_found target=%s", post_id)
             return False
@@ -3017,7 +2842,7 @@ class XTextAdapter(SocialPlatformAdapter):
         scope = article or self.page
         active_btn = await self._find_first_in_scope(
             scope,
-            self.REPOST_ACTIVE_BUTTONS,
+            ui.REPOST_ACTIVE_BUTTONS,
             timeout_ms=1600,
             require_enabled=True,
         )
@@ -3026,13 +2851,13 @@ class XTextAdapter(SocialPlatformAdapter):
             return False
         await self._click(active_btn)
         await self.human.jitter(220, 680)
-        confirm = await self._find_first_enabled(self.UNDO_REPOST_BUTTONS, timeout_ms=2200)
+        confirm = await self._find_first_enabled(ui.UNDO_REPOST_BUTTONS, timeout_ms=2200)
         if confirm:
             await self._click(confirm)
             await self.human.jitter(300, 900)
         await self._wait_network_idle(900)
-        still_active = await self._find_first_in_scope(scope, self.REPOST_ACTIVE_BUTTONS, timeout_ms=700)
-        inactive_btn = await self._find_first_in_scope(scope, self.REPOST_BUTTONS, timeout_ms=900, require_enabled=True)
+        still_active = await self._find_first_in_scope(scope, ui.REPOST_ACTIVE_BUTTONS, timeout_ms=700)
+        inactive_btn = await self._find_first_in_scope(scope, ui.REPOST_BUTTONS, timeout_ms=900, require_enabled=True)
         return inactive_btn is not None or still_active is None
 
     async def _undo_repost(self, platform_post_id: str) -> bool:
@@ -3179,6 +3004,7 @@ class XTextAdapter(SocialPlatformAdapter):
         }
 
     async def follow_user(self, username: str) -> bool:
+        self._clear_action_error()
         handle = self._normalize_username(username)
         if not handle:
             return False
@@ -3197,12 +3023,14 @@ class XTextAdapter(SocialPlatformAdapter):
             await self._click(btn)
             await self.human.jitter(900, 1700)
             return True
-        except Exception:
+        except Exception as exc:
+            self._handle_soft_ui_error("follow_user", exc, selector="button:has-text('Follow')")
             return False
         finally:
             await self._return_home()
 
     async def unfollow_user(self, username: str) -> bool:
+        self._clear_action_error()
         handle = self._normalize_username(username)
         if not handle:
             return False
@@ -3225,7 +3053,8 @@ class XTextAdapter(SocialPlatformAdapter):
                 await self._click(confirm)
             await self.human.jitter(700, 1500)
             return True
-        except Exception:
+        except Exception as exc:
+            self._handle_soft_ui_error("unfollow_user", exc, selector="button:has-text('Unfollow')")
             return False
         finally:
             await self._return_home()

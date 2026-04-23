@@ -7,6 +7,11 @@ This package exposes one main controller class:
 - `XController`
 - `XTextAdapter` (compatibility alias of `XController`)
 
+Additional exported diagnostics types:
+
+- `ActionFailureInfo`
+- `UIActionError`
+
 ## Session Lifecycle
 
 - `await start()`: starts a persistent Chromium context
@@ -14,6 +19,7 @@ This package exposes one main controller class:
 - `await is_logged_in() -> bool`
 - `await open_login_page() -> None`
 - `await current_state() -> dict[str, str]`
+  When a soft UI failure was recorded, `current_state()` also includes `last_action_error`.
 
 ## Navigation / Recovery
 
@@ -68,6 +74,21 @@ This package exposes one main controller class:
   `delete_repost()` verifies repost state instead of authorship because reposts target another author's post.
 - Bulk delete methods run until the relevant profile surface is exhausted; they no longer expose a caller-supplied item limit.
 
+## Diagnostics
+
+`XTextAdapter.last_action_error` holds the latest soft UI failure that was converted into a boolean/empty-result outcome.
+
+`ActionFailureInfo` contains:
+
+- `action`
+- `error_type`
+- `message`
+- `url`
+- `selector`
+- `occurred_at`
+
+Set `ControllerSettings(strict_ui_failures=True)` to turn those soft UI failures into `UIActionError`.
+
 ## Data Model
 
 `ObservedPostData` contains:
@@ -111,3 +132,8 @@ Convenience helpers:
 - a mapping/dict with matching keys
 
 Use `ControllerSettings.to_dict()` when you need to persist or inspect the active values.
+
+Notable maintainability setting:
+
+- `strict_ui_failures`
+  Raises `UIActionError` for soft UI failures instead of quietly returning fallback values.

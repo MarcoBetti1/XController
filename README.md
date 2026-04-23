@@ -68,9 +68,11 @@ Primary exports:
 
 - `XController.XController`
 - `XController.XTextAdapter`
+- `XController.ActionFailureInfo`
 - `XController.ControllerSettings`
 - `XController.ObservedNotificationData`
 - `XController.ObservedPostData`
+- `XController.UIActionError`
 
 Compatibility aliases:
 
@@ -81,6 +83,8 @@ Compatibility aliases:
 ## Project Layout
 
 - `adapter.py`: main X controller implementation
+- `_ui_selectors.py`: centralized X DOM selector and UI rule tables
+- `_diagnostics.py`: soft-failure diagnostics and strict-mode error types
 - `base.py`: shared adapter contract and post model
 - `settings.py`: runtime settings and configuration normalization
 - `human.py`: human-like timing and mouse/typing helpers
@@ -104,6 +108,8 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 - Most flows prefer UI clicks and only fall back to direct URL navigation when recovery is needed.
 - Sync Playwright fallback is preferred on Windows to avoid event-loop/subprocess issues.
 - Methods that mutate state should be treated as best-effort browser automation, not transactional API calls.
+- `controller.last_action_error` records the latest soft UI failure with action, URL, selector summary, and message.
+- Set `ControllerSettings(strict_ui_failures=True)` when you want soft UI failures to raise `UIActionError` instead of returning `False` or an empty result.
 
 ## CI/CD
 

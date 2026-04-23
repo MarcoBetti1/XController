@@ -11,7 +11,7 @@ It is intended to run on pushes and pull requests for:
 - `main`
 - `labui-testing`
 
-The workflow does three things:
+The workflow does three things on both `ubuntu-latest` and `windows-latest`:
 
 - installs the project with whatever extras are defined on that branch
 - runs an import smoke test for the public package
@@ -25,7 +25,7 @@ python -m unittest discover -s tests -p "test_*.py"
 
 That means:
 
-- `main` gets package-level verification without carrying lab or test files
+- `main` gets package-level verification on both Linux and Windows, including the sync-runtime test coverage that matters most for Windows consumers
 - `labui-testing` can run the broader validation stack when those files exist there
 
 ## CD
