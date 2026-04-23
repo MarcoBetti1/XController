@@ -24,7 +24,7 @@ The library favors click-driven navigation first and uses direct URL navigation 
 - `_diagnostics.py`
   `ActionFailureInfo` and `UIActionError` used to surface soft UI failures.
 - `base.py`
-  Shared adapter contract and the `ObservedPostData` model.
+  Shared adapter contract, observed data models, detailed action results, preflight results, timeline read results, and health/media diagnostics.
 - `settings.py`
   Runtime knobs for browser size, typing cadence, pauses, and user-agent defaults.
 - `human.py`
@@ -46,9 +46,22 @@ The current maintenance boundary is:
 - `_ui_selectors.py`
   Selector drift and X wording changes.
 - `adapter.py`
-  Flow orchestration, retries, and state transitions.
+  Flow orchestration, retries, state transitions, detailed service APIs, and browser snapshots.
 - `_diagnostics.py`
   Soft-failure recording and strict-mode escalation.
+
+## Service Integration APIs
+
+Long-running service callers should prefer:
+
+- `preflight_action()`
+  Check reply, quote, or like feasibility before spending generation or media work.
+- `*_detailed()`
+  Capture stable failure stages and reasons for write actions while preserving legacy compact methods.
+- `read_timeline_detailed()`
+  Report requested tab, active tab, URL, article count, and warnings for home timeline reads.
+- `debug_snapshot()` and `health_check()`
+  Capture current browser state without forcing downstream wrappers to duplicate selector probes.
 
 The main cleanup rule applied here was: keep the public behavior stable, but consolidate duplicate internal logic where possible.
 

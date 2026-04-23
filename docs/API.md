@@ -10,6 +10,12 @@ This package exposes one main controller class:
 Additional exported diagnostics types:
 
 - `ActionFailureInfo`
+- `ActionPreflight`
+- `ActionResult`
+- `ControllerHealth`
+- `MediaPreflight`
+- `ObservedMediaData`
+- `TimelineReadResult`
 - `UIActionError`
 
 ## Session Lifecycle
@@ -31,11 +37,14 @@ Additional exported diagnostics types:
 ## Read Operations
 
 - `await read_timeline(limit: int = 20) -> list[ObservedPostData]`
+- `await read_timeline_detailed(limit: int = 20, tab: str = "for_you", force_refresh: bool = False, reset_scroll: bool = False) -> TimelineReadResult`
+- `await read_following_timeline(limit: int = 20) -> list[ObservedPostData]`
 - `await search_posts(query: str, limit: int = 10) -> list[ObservedPostData]`
 - `await read_visible_posts(limit: int = 20) -> list[ObservedPostData]`
 - `await read_notifications(limit: int = 20, unread_only: bool = False) -> list[ObservedNotificationData]`
 - `await read_unread_notifications(limit: int = 20) -> list[ObservedNotificationData]`
 - `await read_mentions(account_handle: str, hours_back: int = 2, limit: int = 120, ...)`
+- `await read_post_thread_context(post_id, limit: int = 6, ...) -> list[ObservedPostData]`
 - `await profile_recent_metrics(username: str, limit: int = 40) -> list[dict[str, int | str]]`
 - `await post_metrics(platform_post_id: str) -> dict[str, int]`
 
@@ -61,6 +70,27 @@ Additional exported diagnostics types:
 - `await unfollow_user(username: str) -> bool`
 - `await engage_post(platform_post_id: str, do_view: bool = True, do_like: bool = False, ...) -> dict[str, bool]`
 
+Detailed write/action variants:
+
+- `await post_text_detailed(text: str, image_paths: ...) -> ActionResult`
+- `await reply_to_post_detailed(platform_post_id: str, text: str, image_paths: ...) -> ActionResult`
+- `await quote_post_detailed(platform_post_id: str, text: str = "", image_paths: ...) -> ActionResult`
+- `await like_post_detailed(platform_post_id: str) -> ActionResult`
+- `await view_post_detailed(platform_post_id: str, dwell_seconds: tuple[int, int] = (3, 8)) -> ActionResult`
+- `await repost_post_detailed(platform_post_id: str) -> ActionResult`
+- `await follow_user_detailed(username: str) -> ActionResult`
+- `await unfollow_user_detailed(username: str) -> ActionResult`
+- `await delete_post_detailed(platform_post_id: str, kind: str = "post") -> ActionResult`
+
+Preflight and diagnostics:
+
+- `await preflight_action(platform_post_id: str, action: str = "reply", open_composer: bool = False) -> ActionPreflight`
+- `await attach_images_preflight(image_paths) -> MediaPreflight`
+- `await current_surface() -> dict[str, str]`
+- `await settle_home(tab: str = "for_you", force_nav: bool = False) -> bool`
+- `await health_check() -> ControllerHealth`
+- `await debug_snapshot(output_dir, article_limit: int = 12) -> dict`
+
 ## Compatibility Guidance
 
 - `reply_to_post()` is the canonical X-specific method name.
@@ -77,6 +107,8 @@ Additional exported diagnostics types:
 ## Diagnostics
 
 `XTextAdapter.last_action_error` holds the latest soft UI failure that was converted into a boolean/empty-result outcome.
+
+For long-running services, prefer detailed methods over legacy compact methods. The compact methods are kept for compatibility and return the same shapes as before.
 
 `ActionFailureInfo` contains:
 
@@ -137,3 +169,7 @@ Notable maintainability setting:
 
 - `strict_ui_failures`
   Raises `UIActionError` for soft UI failures instead of quietly returning fallback values.
+- `playwright_mode`
+  Accepts `"auto"`, `"async"`, or `"sync"` to control whether startup prefers async Playwright or the sync fallback.
+- `prefer_sync_playwright`
+  Optional boolean override for callers that need explicit runtime/thread ownership.

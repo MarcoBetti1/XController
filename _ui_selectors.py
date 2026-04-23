@@ -62,6 +62,18 @@ HOME_ENTRY_SELECTORS = [
     'a[aria-label*="Home"]',
 ]
 
+HOME_FOR_YOU_TAB_SELECTORS = [
+    '[role="tab"]:has-text("For you")',
+    'a:has-text("For you")',
+    'span:has-text("For you")',
+]
+
+HOME_FOLLOWING_TAB_SELECTORS = [
+    '[role="tab"]:has-text("Following")',
+    'a:has-text("Following")',
+    'span:has-text("Following")',
+]
+
 PROFILE_ENTRY_SELECTORS = [
     'a[data-testid="AppTabBar_Profile_Link"]',
     'a[aria-label*="Profile"]',

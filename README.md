@@ -69,9 +69,15 @@ Primary exports:
 - `XController.XController`
 - `XController.XTextAdapter`
 - `XController.ActionFailureInfo`
+- `XController.ActionPreflight`
+- `XController.ActionResult`
 - `XController.ControllerSettings`
+- `XController.ControllerHealth`
+- `XController.MediaPreflight`
+- `XController.ObservedMediaData`
 - `XController.ObservedNotificationData`
 - `XController.ObservedPostData`
+- `XController.TimelineReadResult`
 - `XController.UIActionError`
 
 Compatibility aliases:
@@ -110,6 +116,8 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 - Methods that mutate state should be treated as best-effort browser automation, not transactional API calls.
 - `controller.last_action_error` records the latest soft UI failure with action, URL, selector summary, and message.
 - Set `ControllerSettings(strict_ui_failures=True)` when you want soft UI failures to raise `UIActionError` instead of returning `False` or an empty result.
+- Use the `*_detailed()` write methods, `preflight_action()`, `read_timeline_detailed()`, `attach_images_preflight()`, `debug_snapshot()`, and `health_check()` for long-running service integrations that need structured diagnostics.
+- Set `ControllerSettings(playwright_mode="async")`, `playwright_mode="sync"`, or `prefer_sync_playwright=True/False` when the embedding service needs explicit event-loop/runtime ownership.
 
 ## CI/CD
 

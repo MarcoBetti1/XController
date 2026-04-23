@@ -11,6 +11,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import asyncio
+import json
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 from typing import Any, Callable, Sequence
@@ -20,7 +21,17 @@ from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as Sy
 
 from . import _ui_selectors as ui
 from ._diagnostics import ActionFailureInfo, UIActionError
-from .base import ObservedNotificationData, ObservedPostData, SocialPlatformAdapter
+from .base import (
+    ActionPreflight,
+    ActionResult,
+    ControllerHealth,
+    MediaPreflight,
+    ObservedMediaData,
+    ObservedNotificationData,
+    ObservedPostData,
+    SocialPlatformAdapter,
+    TimelineReadResult,
+)
 from .human import HumanMotion
 from .settings import ControllerSettings
 
@@ -144,6 +155,13 @@ class XTextAdapter(SocialPlatformAdapter):
                 raise
 
     def _prefer_sync_playwright(self) -> bool:
+        if self.settings.prefer_sync_playwright is not None:
+            return bool(self.settings.prefer_sync_playwright)
+        mode = str(self.settings.playwright_mode or "auto").strip().lower()
+        if mode == "sync":
+            return True
+        if mode == "async":
+            return False
         # Windows asyncio subprocess handling is frequently unavailable in this runtime.
         # Prefer sync Playwright there to avoid repeated transport failures.
         return os.name == "nt"
@@ -274,6 +292,90 @@ class XTextAdapter(SocialPlatformAdapter):
         if self._is_target_closed_error(exc):
             raise RuntimeError("target_page_or_context_closed") from exc
         self._record_action_error(action, exc, selector=selector)
+
+    async def _current_state_name(self) -> str:
+        try:
+            return str((await self.current_state()).get("state") or "")
+        except Exception:
+            return "unknown"
+
+    async def _active_home_tab(self) -> str:
+        if not self.page:
+            return ""
+        try:
+            value = await self._evaluate(
+                """() => {
+                    const normalize = text => String(text || '').toLowerCase().replace(/\s+/g, ' ').trim();
+                    const tabs = Array.from(document.querySelectorAll('[role="tab"], a[aria-current="page"]'));
+                    for (const tab of tabs) {
+                        const text = normalize(tab.innerText || tab.textContent || tab.getAttribute('aria-label'));
+                        const current = tab.getAttribute('aria-selected') === 'true' || tab.getAttribute('aria-current') === 'page';
+                        if (!current) continue;
+                        if (text.includes('following')) return 'following';
+                        if (text.includes('for you')) return 'for_you';
+                    }
+                    return '';
+                }"""
+            )
+            if value in {"for_you", "following"}:
+                return str(value)
+        except Exception:
+            pass
+        return ""
+
+    async def current_surface(self) -> dict[str, str]:
+        state = await self.current_state()
+        return {
+            "state": str(state.get("state") or ""),
+            "url": str(state.get("url") or ""),
+            "active_home_tab": await self._active_home_tab(),
+        }
+
+    async def _fill_action_context(self, result: ActionResult) -> ActionResult:
+        result.current_url = self.page.url if self.page else ""
+        result.current_state = await self._current_state_name()
+        result.active_home_tab = await self._active_home_tab()
+        if self.last_action_error and not result.diagnostic:
+            result.diagnostic = {"last_action_error": self.last_action_error.to_dict()}
+        return result
+
+    async def _action_result(
+        self,
+        action: str,
+        *,
+        ok: bool = False,
+        target_post_id: str = "",
+        created_post_id: str = "",
+        failure_reason: str = "",
+        failure_stage: str = "unknown",
+        attempts: int = 0,
+        media_paths: list[str] | None = None,
+        raw: dict[str, Any] | None = None,
+        diagnostic: dict[str, Any] | None = None,
+    ) -> ActionResult:
+        post_id = self._normalize_post_id(target_post_id)
+        result = ActionResult(
+            ok=ok,
+            action=action,
+            target_post_id=post_id,
+            created_post_id=created_post_id,
+            target_url=f"{self.BASE_URL}/i/web/status/{post_id}" if post_id else "",
+            failure_reason=failure_reason,
+            failure_stage=failure_stage,
+            attempts=attempts,
+            media_paths=list(media_paths or []),
+            diagnostic=dict(diagnostic or {}),
+            raw=dict(raw or {}),
+        )
+        return await self._fill_action_context(result)
+
+    async def _screenshot(self, path: str) -> None:
+        if not self.page:
+            return
+        if self._sync_mode:
+            await self._run_sync(self._sync_page.screenshot, path=path, full_page=True)
+            return
+        await self.page.screenshot(path=path, full_page=True)
 
     async def _wait_network_idle(self, ms: int) -> None:
         if not self.page:
@@ -1286,6 +1388,36 @@ class XTextAdapter(SocialPlatformAdapter):
                     return True
         return False
 
+    async def _select_home_tab(self, tab: str) -> bool:
+        target = str(tab or "for_you").strip().lower()
+        if target in {"for-you", "for you", "foryou"}:
+            target = "for_you"
+        if target not in {"for_you", "following"}:
+            return False
+        selectors = ui.HOME_FOLLOWING_TAB_SELECTORS if target == "following" else ui.HOME_FOR_YOU_TAB_SELECTORS
+        active = await self._active_home_tab()
+        if active == target:
+            return True
+        tab_node = await self._find_first(selectors, timeout_ms=1600)
+        if not tab_node:
+            return False
+        with contextlib.suppress(Exception):
+            await self._click(tab_node)
+            await self.human.jitter(260, 760)
+            await self._wait_network_idle(1200)
+        active = await self._active_home_tab()
+        return active in {"", target}
+
+    async def settle_home(self, tab: str = "for_you", force_nav: bool = False) -> bool:
+        if not self.page:
+            return False
+        if force_nav or not await self._looks_like_home_timeline():
+            if not await self._open_home_via_click():
+                await self._goto(f"{self.BASE_URL}/home")
+        if not await self._looks_like_home_timeline():
+            return False
+        return await self._select_home_tab(tab)
+
     async def _open_notifications_via_click(self) -> bool:
         if not self.page:
             return False
@@ -1487,6 +1619,40 @@ class XTextAdapter(SocialPlatformAdapter):
             if await self._count_locator(name_block):
                 return self._extract_handle_from_text(await self._inner_text(name_block))
         return ""
+
+    async def _extract_article_author_display_name(self, article: Any) -> str:
+        if not article:
+            return ""
+        with contextlib.suppress(Exception):
+            name_block = article.locator('div[data-testid="User-Name"]').first
+            if await self._count_locator(name_block):
+                for line in (await self._inner_text(name_block, timeout_ms=1200)).splitlines():
+                    clean = line.strip()
+                    if clean and not clean.startswith("@"):
+                        return clean
+        return ""
+
+    async def _extract_article_media(self, article: Any) -> list[dict[str, Any]]:
+        if not article:
+            return []
+        media: list[dict[str, Any]] = []
+        with contextlib.suppress(Exception):
+            images = article.locator("img")
+            for idx in range(min(await self._count_locator(images), 12)):
+                image = images.nth(idx)
+                src = (await self._get_attribute(image, "src")) or ""
+                alt = (await self._get_attribute(image, "alt")) or ""
+                if not src or "profile_images" in src:
+                    continue
+                media.append(ObservedMediaData(kind="image", url=src, thumbnail_url=src, alt_text=alt).to_dict())
+        with contextlib.suppress(Exception):
+            videos = article.locator("video")
+            for idx in range(min(await self._count_locator(videos), 6)):
+                video = videos.nth(idx)
+                src = (await self._get_attribute(video, "src")) or ""
+                poster = (await self._get_attribute(video, "poster")) or ""
+                media.append(ObservedMediaData(kind="video", url=src, thumbnail_url=poster).to_dict())
+        return media
 
     async def _extract_article_status_url(self, article: Any) -> str:
         if not article:
@@ -1834,21 +2000,28 @@ class XTextAdapter(SocialPlatformAdapter):
                 body = text
                 with contextlib.suppress(Exception):
                     body = (await self._inner_text(item, timeout_ms=1200)).strip()[:4000]
-                author = ""
-                auth_locator = item.locator('div[data-testid="User-Name"] a[href^="/"]').first
-                if await self._count_locator(auth_locator):
-                    auth_href = (await self._get_attribute(auth_locator, "href")) or ""
-                    author = auth_href.strip("/").split("/")[-1]
+                author = await self._extract_article_author_handle(item)
+                author_display_name = await self._extract_article_author_display_name(item)
+                created_at = await self._extract_article_timestamp(item)
+                social_context = await self._extract_article_social_context(item)
                 metrics = await self._extract_article_metrics(item)
-                limit_state = self._extract_article_author_limit_state(body)
+                media = await self._extract_article_media(item)
+                limit_state = self._extract_article_author_limit_state(body, social_context)
                 posts.append(
                     ObservedPostData(
                         post_id,
                         author,
                         text,
                         {
+                            "post_id": post_id,
                             "url": href,
+                            "author_handle": author,
+                            "author_display_name": author_display_name,
+                            "created_at": created_at.isoformat() if created_at else None,
+                            "text": text,
                             "body": body,
+                            "social_context": social_context,
+                            "media": media,
                             **limit_state,
                             **metrics,
                             "metrics": metrics,
@@ -1872,16 +2045,46 @@ class XTextAdapter(SocialPlatformAdapter):
                 await self.human.jitter(300, 780)
         return posts
 
-    async def read_timeline(self, limit: int = 20) -> list[ObservedPostData]:
+    async def read_timeline_detailed(
+        self,
+        limit: int = 20,
+        tab: str = "for_you",
+        force_refresh: bool = False,
+        reset_scroll: bool = False,
+    ) -> TimelineReadResult:
         limit = max(1, int(limit))
-        if not await self._looks_like_home_timeline():
-            if not await self._open_home_via_click():
-                await self._goto(f"{self.BASE_URL}/home")
+        requested_tab = str(tab or "for_you").strip().lower().replace("-", "_").replace(" ", "_")
+        if requested_tab not in {"for_you", "following"}:
+            requested_tab = "for_you"
+        warnings: list[str] = []
+        force_refreshed = False
+        if not await self.settle_home(requested_tab, force_nav=force_refresh):
+            warnings.append("home_settle_failed")
+        elif force_refresh:
+            force_refreshed = True
+        if reset_scroll and self.page:
+            await self._keyboard_press("Home")
+            await self.human.jitter(180, 520)
         else:
             await self.human.jitter(120, 420)
         if not self.page:
-            return []
+            return TimelineReadResult(
+                posts=[],
+                requested_tab=requested_tab,
+                active_tab="",
+                source_url="",
+                current_state="not_started",
+                raw_count=0,
+                article_count=0,
+                force_refreshed=force_refreshed,
+                reset_scroll=reset_scroll,
+                warnings=["page_not_started"],
+            )
 
+        active_tab = await self._active_home_tab()
+        if active_tab and active_tab != requested_tab:
+            warnings.append(f"active_tab_mismatch:{active_tab}")
+        article_count = await self._count_locator(self.page.locator("article"))
         first_pass = await self._collect_posts_from_current_page(
             limit=limit,
             scroll_rounds=max(4, (limit // 4) + 6),
@@ -1890,18 +2093,54 @@ class XTextAdapter(SocialPlatformAdapter):
             allow_backtrack=True,
         )
         if first_pass:
-            return first_pass
+            return TimelineReadResult(
+                posts=first_pass,
+                requested_tab=requested_tab,
+                active_tab=active_tab,
+                source_url=self.page.url or "",
+                current_state=await self._current_state_name(),
+                raw_count=len(first_pass),
+                article_count=article_count,
+                force_refreshed=force_refreshed,
+                reset_scroll=reset_scroll,
+                warnings=warnings,
+            )
 
         # Retry once after forcing home navigation; timeline occasionally renders late.
         await self._goto(f"{self.BASE_URL}/home")
         await self.human.jitter(220, 620)
-        return await self._collect_posts_from_current_page(
+        await self._select_home_tab(requested_tab)
+        posts = await self._collect_posts_from_current_page(
             limit=limit,
             scroll_rounds=max(5, (limit // 4) + 7),
             max_scan=max(limit * 3, 45),
             stagnation_limit=3,
             allow_backtrack=True,
         )
+        article_count = await self._count_locator(self.page.locator("article")) if self.page else 0
+        active_tab = await self._active_home_tab()
+        if not posts:
+            warnings.append("timeline_empty_after_retry")
+        return TimelineReadResult(
+            posts=posts,
+            requested_tab=requested_tab,
+            active_tab=active_tab,
+            source_url=self.page.url if self.page else "",
+            current_state=await self._current_state_name(),
+            raw_count=len(posts),
+            article_count=article_count,
+            force_refreshed=force_refreshed,
+            reset_scroll=reset_scroll,
+            warnings=warnings,
+        )
+
+    async def read_timeline(self, limit: int = 20) -> list[ObservedPostData]:
+        result = await self.read_timeline_detailed(limit=limit)
+        return result.posts
+
+    async def read_following_timeline(self, limit: int = 20) -> list[ObservedPostData]:
+        result = await self.read_timeline_detailed(limit=limit, tab="following")
+        return result.posts
 
     async def read_visible_posts(self, limit: int = 20) -> list[ObservedPostData]:
         limit = max(1, int(limit))
@@ -1994,9 +2233,11 @@ class XTextAdapter(SocialPlatformAdapter):
         actor = await self._extract_notification_actor_handle(article)
         if not actor:
             actor = await self._extract_article_author_handle(article)
+        actor_display_name = await self._extract_article_author_display_name(article)
         created_at = await self._extract_article_timestamp(article)
         unread = await self._notification_article_unread(article)
         metrics = await self._extract_article_metrics(article)
+        media = await self._extract_article_media(article)
         limit_state = self._extract_article_author_limit_state(body, social_context)
         notification_type = self._classify_notification_type(body or text, social_context)
         notification_id = self._notification_id(post_id, actor, notification_type, created_at, body or text)
@@ -2010,10 +2251,13 @@ class XTextAdapter(SocialPlatformAdapter):
                 "post_id": post_id,
                 "platform_post_id": post_id,
                 "url": url,
+                "actor_handle": actor,
+                "actor_display_name": actor_display_name,
                 "created_at": created_at.isoformat() if created_at else None,
                 "unread": unread,
                 "social_context": social_context,
                 "body": body,
+                "media": media,
                 **limit_state,
                 **metrics,
                 "metrics": metrics,
@@ -2420,6 +2664,276 @@ class XTextAdapter(SocialPlatformAdapter):
             return (await self._inner_text(article, timeout_ms=1200)).strip()
         return ""
 
+    async def _article_summary(self, article: Any, *, target_post_id: str = "", thread_index: int | None = None) -> dict[str, Any]:
+        url = await self._extract_article_status_url(article)
+        post_id = self._extract_post_id(url)
+        text = (await self._extract_article_text(article))[:1200]
+        body = text
+        with contextlib.suppress(Exception):
+            body = (await self._inner_text(article, timeout_ms=1200)).strip()[:3000]
+        social_context = await self._extract_article_social_context(article)
+        created_at = await self._extract_article_timestamp(article)
+        metrics = await self._extract_article_metrics(article)
+        limit_state = self._extract_article_author_limit_state(body, social_context)
+        row = {
+            "post_id": post_id,
+            "url": url,
+            "author": await self._extract_article_author_handle(article),
+            "author_display_name": await self._extract_article_author_display_name(article),
+            "text": text,
+            "body": body,
+            "created_at": created_at.isoformat() if created_at else None,
+            "social_context": social_context,
+            "metrics": metrics,
+            "media": await self._extract_article_media(article),
+            **limit_state,
+        }
+        if target_post_id:
+            row["is_target"] = post_id == target_post_id
+        if thread_index is not None:
+            row["thread_index"] = thread_index
+        return row
+
+    async def preflight_action(
+        self,
+        platform_post_id: str,
+        action: str = "reply",
+        *,
+        open_composer: bool = False,
+    ) -> ActionPreflight:
+        post_id = self._normalize_post_id(platform_post_id)
+        action_name = str(action or "").strip().lower()
+        if action_name not in {"reply", "quote", "like"}:
+            action_name = "reply"
+        if not self.page:
+            return ActionPreflight(False, action_name, post_id, reason="page_not_started", current_state="not_started")
+        if not post_id:
+            return ActionPreflight(False, action_name, "", reason="target_post_not_found", current_url=self.page.url or "")
+
+        article = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if article is None:
+            with contextlib.suppress(Exception):
+                await self._open_post_page(post_id)
+                article = await self._find_post_article_in_context(post_id, scan_rounds=1)
+
+        result = ActionPreflight(
+            ok=False,
+            action=action_name,
+            target_post_id=post_id,
+            target_url=f"{self.BASE_URL}/i/web/status/{post_id}",
+            current_url=self.page.url or "",
+            current_state=await self._current_state_name(),
+            active_home_tab=await self._active_home_tab(),
+            article_found=article is not None,
+        )
+        if article is None:
+            result.reason = "target_post_not_found"
+            return result
+
+        summary = await self._article_summary(article, target_post_id=post_id)
+        result.raw = {"article": summary}
+        result.author_limited = bool(summary.get("author_limited"))
+        result.reply_limited = bool(summary.get("reply_limited"))
+        result.author_limit_notice = str(summary.get("author_limit_notice") or "")
+        result.quote_limited = False
+
+        selectors = {
+            "reply": ui.COMMENT_BUTTONS,
+            "quote": ui.REPOST_BUTTONS,
+            "like": ui.LIKE_BUTTONS,
+        }[action_name]
+        button = await self._find_first_in_scope(article, selectors, timeout_ms=900, require_enabled=False)
+        result.button_found = button is not None
+        if button is not None:
+            result.button_enabled = await self._is_button_enabled(button)
+        if action_name == "reply" and result.reply_limited:
+            result.reason = "reply_limited"
+            return result
+        if not result.button_found:
+            result.reason = f"{action_name}_button_not_found"
+            return result
+        if not result.button_enabled:
+            result.reason = "submit_disabled"
+            return result
+        if open_composer and action_name in {"reply", "quote"}:
+            box = await (
+                self._open_reply_box_in_current_context(post_id)
+                if action_name == "reply"
+                else self._open_quote_box_in_current_context(post_id)
+            )
+            result.composer_opened = box is not None
+            if box is not None:
+                submit = await self._find_reply_submit_button(box, timeout_ms=900)
+                result.submit_available = submit is not None
+            await self._dismiss_reply_ui()
+            if not result.composer_opened:
+                result.reason = "composer_not_opened"
+                return result
+        result.ok = True
+        return result
+
+    async def attach_images_preflight(self, image_paths: ImagePathInput | None) -> MediaPreflight:
+        candidates: list[ImagePath]
+        if image_paths is None:
+            candidates = []
+        elif isinstance(image_paths, (str, os.PathLike)):
+            candidates = [image_paths]
+        else:
+            candidates = list(image_paths)
+        errors: list[dict[str, Any]] = []
+        normalized: list[str] = []
+        if len(candidates) > ui.MAX_IMAGES_PER_POST:
+            errors.append({"reason": "too_many_images", "max": ui.MAX_IMAGES_PER_POST, "count": len(candidates)})
+        for candidate in candidates:
+            path = Path(candidate).expanduser()
+            if not path.is_absolute():
+                path = (Path.cwd() / path).resolve()
+            else:
+                path = path.resolve()
+            item = {"path": str(path), "exists": path.is_file(), "supported_extension": path.suffix.lower() in ui.SUPPORTED_IMAGE_EXTENSIONS}
+            if not path.is_file():
+                item["reason"] = "file_not_found"
+                errors.append(item)
+                continue
+            if path.suffix.lower() not in ui.SUPPORTED_IMAGE_EXTENSIONS:
+                item["reason"] = "unsupported_extension"
+                errors.append(item)
+                continue
+            item["size_bytes"] = path.stat().st_size
+            normalized.append(str(path))
+        upload_input_found = False
+        if self.page:
+            with contextlib.suppress(Exception):
+                upload_input_found = await self._find_media_input_for_composer(None, timeout_ms=300) is not None
+        return MediaPreflight(
+            ok=not errors,
+            normalized_paths=normalized,
+            file_count=len(candidates),
+            max_file_count=ui.MAX_IMAGES_PER_POST,
+            errors=errors,
+            raw={"upload_input_found": upload_input_found},
+        )
+
+    async def debug_snapshot(self, output_dir: str | os.PathLike[str], article_limit: int = 12) -> dict[str, Any]:
+        out_dir = Path(output_dir).expanduser()
+        if not out_dir.is_absolute():
+            out_dir = (Path.cwd() / out_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        html_path = out_dir / "page.html"
+        screenshot_path = out_dir / "page.png"
+        manifest_path = out_dir / "manifest.json"
+
+        page_html = await self._page_content()
+        html_path.write_text(page_html, encoding="utf-8")
+        with contextlib.suppress(Exception):
+            await self._screenshot(str(screenshot_path))
+
+        articles_summary: list[dict[str, Any]] = []
+        article_count = 0
+        if self.page:
+            articles = self.page.locator("article")
+            article_count = await self._count_locator(articles)
+            for idx in range(min(article_count, max(0, int(article_limit)))):
+                with contextlib.suppress(Exception):
+                    articles_summary.append(await self._article_summary(articles.nth(idx), thread_index=idx))
+
+        selector_probe = {
+            "reply_button": bool(self.page and await self._find_first(ui.COMMENT_BUTTONS, timeout_ms=200)),
+            "quote_button": bool(self.page and await self._find_first(ui.REPOST_BUTTONS, timeout_ms=200)),
+            "like_button": bool(self.page and await self._find_first(ui.LIKE_BUTTONS, timeout_ms=200)),
+            "submit_button": bool(self.page and await self._find_first(ui.POST_BUTTONS, timeout_ms=200)),
+            "media_input": bool(self.page and await self._find_media_input_for_composer(None, timeout_ms=200)),
+        }
+        manifest = {
+            "url": self.page.url if self.page else "",
+            "current_state": await self._current_state_name(),
+            "login_state": "logged_in" if self.page and await self._any_selector(ui.LOGGED_IN_SELECTORS) else "login_required" if self.page else "not_started",
+            "active_home_tab": await self._active_home_tab(),
+            "article_count": article_count,
+            "articles": articles_summary,
+            "visible_dialogs": await self._visible_dialogs(),
+            "composer_state": {"open": await self._is_compose_state()},
+            "selector_probe": selector_probe,
+            "screenshot_path": str(screenshot_path),
+            "html_path": str(html_path),
+        }
+        manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
+        return {"manifest_path": str(manifest_path), **manifest}
+
+    async def _visible_dialogs(self) -> list[str]:
+        if not self.page:
+            return []
+        try:
+            value = await self._evaluate(
+                """() => Array.from(document.querySelectorAll('[role="dialog"]'))
+                    .filter(node => {
+                        const rect = node.getBoundingClientRect();
+                        const style = window.getComputedStyle(node);
+                        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                    })
+                    .map(node => String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 240))"""
+            )
+            return [str(item) for item in value] if isinstance(value, list) else []
+        except Exception:
+            return []
+
+    async def health_check(self) -> ControllerHealth:
+        browser_started = self.page is not None
+        state = await self.current_state() if browser_started else {"state": "not_started", "url": ""}
+        logged_in = bool(browser_started and await self._any_selector(ui.LOGGED_IN_SELECTORS))
+        content = (await self._page_content()).lower() if browser_started else ""
+        return ControllerHealth(
+            browser_started=browser_started,
+            logged_in=logged_in,
+            current_url=str(state.get("url") or ""),
+            current_state=str(state.get("state") or ""),
+            active_home_tab=await self._active_home_tab(),
+            login_required=not logged_in,
+            account_locked="account is locked" in content or "temporarily restricted" in content,
+            rate_limited="rate limit" in content or "try again later" in content,
+            blocking_modal_present=bool(await self._visible_dialogs()),
+            last_action_error=self.last_action_error.to_dict() if self.last_action_error else {},
+        )
+
+    async def read_post_thread_context(
+        self,
+        post_id: str,
+        limit: int = 6,
+        include_parent: bool = True,
+        include_target: bool = True,
+        include_replies: bool = True,
+    ) -> list[ObservedPostData]:
+        target_id = self._normalize_post_id(post_id)
+        if not target_id or not await self._open_post_page(target_id) or not self.page:
+            return []
+        articles = self.page.locator("article")
+        total = await self._count_locator(articles)
+        rows: list[ObservedPostData] = []
+        for idx in range(min(total, max(1, int(limit)) * 3)):
+            article = articles.nth(idx)
+            summary = await self._article_summary(article, target_post_id=target_id, thread_index=idx)
+            item_id = str(summary.get("post_id") or "")
+            if not item_id:
+                continue
+            is_target = item_id == target_id
+            if is_target and not include_target:
+                continue
+            if not is_target and idx == 0 and not include_parent:
+                continue
+            if not is_target and idx > 0 and not include_replies:
+                continue
+            rows.append(
+                ObservedPostData(
+                    platform_post_id=item_id,
+                    author=str(summary.get("author") or ""),
+                    text=str(summary.get("text") or ""),
+                    raw={**summary, "conversation_id": target_id},
+                )
+            )
+            if len(rows) >= max(1, int(limit)):
+                break
+        return rows
+
     async def _open_compose_box(self):
         # Prefer click-driven compose from home/sidebar.
         if not await self._looks_like_home_timeline():
@@ -2483,9 +2997,36 @@ class XTextAdapter(SocialPlatformAdapter):
             logger.info("post_text_submitted_unknown_post_id")
         return post_id
 
+    async def post_text_detailed(self, text: str, image_paths: ImagePathInput | None = None) -> ActionResult:
+        if not self.page:
+            return await self._action_result("post", failure_reason="page_not_started", failure_stage="not_started")
+        media_preflight = await self.attach_images_preflight(image_paths)
+        if not media_preflight.ok:
+            return await self._action_result(
+                "post",
+                failure_reason=str(media_preflight.errors[0].get("reason") or "media_preflight_failed"),
+                failure_stage="media_attach",
+                media_paths=media_preflight.normalized_paths,
+                diagnostic={"media_preflight": media_preflight.to_dict()},
+            )
+        post_id = await self._post_from_compose(text, media_preflight.normalized_paths)
+        if post_id:
+            result = await self._action_result("post", ok=True, created_post_id=post_id, media_paths=media_preflight.normalized_paths)
+            result.composer_opened = True
+            result.submit_clicked = True
+            result.confirmation_observed = True
+            result.media_attached = bool(media_preflight.normalized_paths)
+            return result
+        return await self._action_result(
+            "post",
+            failure_reason="submit_not_confirmed",
+            failure_stage="post_submit",
+            media_paths=media_preflight.normalized_paths,
+        )
+
     async def post_text(self, text: str, image_paths: ImagePathInput | None = None) -> str | None:
-        image_files = self._normalize_image_paths(image_paths)
-        return await self._post_from_compose(text, image_files)
+        result = await self.post_text_detailed(text, image_paths=image_paths)
+        return result.created_post_id if result.ok else None
 
     async def post_image(self, image_paths: ImagePathInput, text: str = "") -> str | None:
         image_files = self._normalize_image_paths(image_paths)
@@ -2541,25 +3082,56 @@ class XTextAdapter(SocialPlatformAdapter):
             else:
                 await self._return_home()
 
-    async def like_post(self, platform_post_id: str) -> bool:
+    async def like_post_detailed(self, platform_post_id: str) -> ActionResult:
         if not self.page:
-            return False
+            return await self._action_result("like", target_post_id=str(platform_post_id), failure_reason="page_not_started", failure_stage="not_started")
+        post_id = self._normalize_post_id(platform_post_id)
+        if not post_id:
+            return await self._action_result("like", target_post_id=str(platform_post_id), failure_reason="target_post_not_found", failure_stage="target_lookup")
         try:
             if await self._like_in_current_context(platform_post_id):
-                return True
+                result = await self._action_result("like", ok=True, target_post_id=post_id)
+                result.confirmation_observed = True
+                return result
+            preflight = await self.preflight_action(post_id, action="like")
             logger.info("like_inline_not_found target=%s page=%s", platform_post_id, self.page.url or "")
-            return False
+            return await self._action_result(
+                "like",
+                target_post_id=post_id,
+                failure_reason=preflight.reason or "target_post_not_found",
+                failure_stage="target_lookup",
+                raw={"preflight": preflight.to_dict()},
+            )
         except Exception as exc:
             if self._is_driver_connection_closed(exc):
                 raise RuntimeError("playwright_driver_connection_closed") from exc
             if self._is_target_closed_error(exc):
                 raise RuntimeError("target_page_or_context_closed") from exc
             logger.warning("like_post_failed target=%s error=%s", platform_post_id, str(exc)[:260])
-            return False
+            return await self._action_result(
+                "like",
+                target_post_id=post_id,
+                failure_reason="unknown_exception",
+                failure_stage="unknown",
+                diagnostic={"exception": type(exc).__name__, "message": str(exc)[:260]},
+            )
+
+    async def like_post(self, platform_post_id: str) -> bool:
+        result = await self.like_post_detailed(platform_post_id)
+        return result.ok
 
     async def view_post(self, platform_post_id: str, dwell_seconds: tuple[int, int] = (3, 8)) -> bool:
         result = await self.engage_post(platform_post_id, do_view=True, do_like=False, dwell_seconds=dwell_seconds)
         return bool(result.get("viewed"))
+
+    async def view_post_detailed(self, platform_post_id: str, dwell_seconds: tuple[int, int] = (3, 8)) -> ActionResult:
+        post_id = self._normalize_post_id(platform_post_id)
+        if not self.page:
+            return await self._action_result("view", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+        result = await self.engage_post(post_id, do_view=True, do_like=False, dwell_seconds=dwell_seconds)
+        if result.get("viewed"):
+            return await self._action_result("view", ok=True, target_post_id=post_id)
+        return await self._action_result("view", target_post_id=post_id, failure_reason="target_post_not_found", failure_stage="target_lookup")
 
     async def quote_post(
         self,
@@ -2607,6 +3179,50 @@ class XTextAdapter(SocialPlatformAdapter):
             logger.warning("quote_post_failed target=%s error=%s", post_id, str(exc)[:260])
             return None
 
+    async def quote_post_detailed(
+        self,
+        platform_post_id: str,
+        text: str = "",
+        image_paths: ImagePathInput | None = None,
+    ) -> ActionResult:
+        post_id = self._normalize_post_id(platform_post_id)
+        if not self.page:
+            return await self._action_result("quote", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+        media_preflight = await self.attach_images_preflight(image_paths)
+        if not media_preflight.ok:
+            return await self._action_result(
+                "quote",
+                target_post_id=post_id,
+                failure_reason=str(media_preflight.errors[0].get("reason") or "media_preflight_failed"),
+                failure_stage="media_attach",
+                media_paths=media_preflight.normalized_paths,
+                diagnostic={"media_preflight": media_preflight.to_dict()},
+            )
+        preflight = await self.preflight_action(post_id, action="quote")
+        created_id = await self.quote_post(post_id, text=text, image_paths=media_preflight.normalized_paths)
+        if created_id:
+            result = await self._action_result(
+                "quote",
+                ok=True,
+                target_post_id=post_id,
+                created_post_id=created_id,
+                media_paths=media_preflight.normalized_paths,
+                raw={"preflight": preflight.to_dict()},
+            )
+            result.composer_opened = True
+            result.submit_clicked = True
+            result.confirmation_observed = True
+            result.media_attached = bool(media_preflight.normalized_paths)
+            return result
+        return await self._action_result(
+            "quote",
+            target_post_id=post_id,
+            failure_reason=preflight.reason or "quote_button_or_box_not_found",
+            failure_stage="composer_open",
+            media_paths=media_preflight.normalized_paths,
+            raw={"preflight": preflight.to_dict()},
+        )
+
     async def quote_post_with_image(
         self,
         platform_post_id: str,
@@ -2618,20 +3234,41 @@ class XTextAdapter(SocialPlatformAdapter):
             raise ValueError("At least one image path is required")
         return await self.quote_post(platform_post_id, text=text, image_paths=image_files)
 
-    async def _reply_to_post_impl(
+    async def reply_to_post_detailed(
         self,
         platform_post_id: str,
         text: str,
         image_paths: ImagePathInput | None = None,
-    ) -> str | None:
+    ) -> ActionResult:
         if not self.page:
-            return None
+            return await self._action_result("reply", target_post_id=str(platform_post_id), failure_reason="page_not_started", failure_stage="not_started")
         post_id = self._normalize_post_id(platform_post_id)
         if not post_id:
-            return None
-        image_files = self._normalize_image_paths(image_paths)
+            return await self._action_result("reply", target_post_id=str(platform_post_id), failure_reason="target_post_not_found", failure_stage="target_lookup")
+        media_preflight = await self.attach_images_preflight(image_paths)
+        if not media_preflight.ok:
+            return await self._action_result(
+                "reply",
+                target_post_id=post_id,
+                failure_reason=str(media_preflight.errors[0].get("reason") or "media_preflight_failed"),
+                failure_stage="media_attach",
+                media_paths=media_preflight.normalized_paths,
+                diagnostic={"media_preflight": media_preflight.to_dict()},
+            )
+        image_files = media_preflight.normalized_paths
         try:
             for attempt in range(1, 4):
+                preflight = await self.preflight_action(post_id, action="reply")
+                if not preflight.ok and preflight.reason == "reply_limited":
+                    return await self._action_result(
+                        "reply",
+                        target_post_id=post_id,
+                        failure_reason="reply_limited",
+                        failure_stage="preflight",
+                        attempts=attempt,
+                        media_paths=image_files,
+                        raw={"preflight": preflight.to_dict()},
+                    )
                 box = await self._open_reply_box_in_current_context(post_id, scan_rounds=min(4, attempt + 1))
                 if not box:
                     logger.warning("reply_button_or_box_not_found target=%s attempt=%s", post_id, attempt)
@@ -2640,8 +3277,20 @@ class XTextAdapter(SocialPlatformAdapter):
                     await self.human.jitter(160, 460)
                     continue
 
-                await self._clear_textbox(box)
-                await self._type_text(box, text)
+                try:
+                    await self._clear_textbox(box)
+                    await self._type_text(box, text)
+                except Exception as exc:
+                    logger.warning("reply_text_entry_failed target=%s attempt=%s error=%s", post_id, attempt, str(exc)[:260])
+                    await self._dismiss_reply_ui()
+                    return await self._action_result(
+                        "reply",
+                        target_post_id=post_id,
+                        failure_reason="text_entry_failed",
+                        failure_stage="text_entry",
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
                 if not await self._attach_images_to_composer(box, image_files):
                     logger.warning(
                         "reply_media_attach_failed target=%s attempt=%s count=%s",
@@ -2650,7 +3299,14 @@ class XTextAdapter(SocialPlatformAdapter):
                         len(image_files),
                     )
                     await self._dismiss_reply_ui()
-                    continue
+                    return await self._action_result(
+                        "reply",
+                        target_post_id=post_id,
+                        failure_reason="media_upload_failed",
+                        failure_stage="media_attach",
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
                 send = await self._find_reply_submit_button(box, timeout_ms=1800)
                 submitted = False
                 if send:
@@ -2672,7 +3328,14 @@ class XTextAdapter(SocialPlatformAdapter):
                 if not submitted:
                     logger.warning("reply_submit_trigger_not_found target=%s attempt=%s", post_id, attempt)
                     await self._dismiss_reply_ui()
-                    continue
+                    return await self._action_result(
+                        "reply",
+                        target_post_id=post_id,
+                        failure_reason="reply_submit_trigger_not_found",
+                        failure_stage="submit_lookup",
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
 
                 await self.human.jitter(220, 620)
                 if await self._has_reply_audience_modal():
@@ -2684,7 +3347,14 @@ class XTextAdapter(SocialPlatformAdapter):
                             attempt,
                         )
                         await self._dismiss_reply_ui()
-                        continue
+                        return await self._action_result(
+                            "reply",
+                            target_post_id=post_id,
+                            failure_reason="submit_blocked_by_audience_modal",
+                            failure_stage="confirmation",
+                            attempts=attempt,
+                            media_paths=image_files,
+                        )
                     await self.human.jitter(280, 760)
                     send_retry = await self._find_reply_submit_button(box, timeout_ms=1200)
                     if send_retry:
@@ -2698,34 +3368,100 @@ class XTextAdapter(SocialPlatformAdapter):
                         attempt,
                     )
                     await self._dismiss_reply_ui()
-                    continue
+                    return await self._action_result(
+                        "reply",
+                        target_post_id=post_id,
+                        failure_reason="submit_blocked_by_audience_modal",
+                        failure_stage="confirmation",
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
 
                 await self.human.jitter(700, 1500)
                 reply_id = await self._guess_recent_post_id()
                 if reply_id and reply_id != post_id:
-                    return reply_id
+                    result = await self._action_result(
+                        "reply",
+                        ok=True,
+                        target_post_id=post_id,
+                        created_post_id=reply_id,
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
+                    result.composer_opened = True
+                    result.submit_clicked = True
+                    result.confirmation_observed = True
+                    result.media_attached = bool(image_files)
+                    return result
                 # Verify the inline reply control became disabled or the draft cleared.
                 send_after = await self._find_first(ui.REPLY_SEND_BUTTONS, timeout_ms=900)
                 if send_after and (not await self._is_button_enabled(send_after)):
-                    return "unknown_reply_id"
+                    result = await self._action_result(
+                        "reply",
+                        ok=True,
+                        target_post_id=post_id,
+                        created_post_id="unknown_reply_id",
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
+                    result.composer_opened = True
+                    result.submit_clicked = True
+                    result.confirmation_observed = True
+                    result.media_attached = bool(image_files)
+                    return result
                 box_text = ""
                 with contextlib.suppress(Exception):
                     box_text = (await self._inner_text(box)).strip()
                 if not box_text:
-                    return "unknown_reply_id"
+                    result = await self._action_result(
+                        "reply",
+                        ok=True,
+                        target_post_id=post_id,
+                        created_post_id="unknown_reply_id",
+                        attempts=attempt,
+                        media_paths=image_files,
+                    )
+                    result.composer_opened = True
+                    result.submit_clicked = True
+                    result.confirmation_observed = True
+                    result.media_attached = bool(image_files)
+                    return result
                 logger.warning(
                     "reply_submit_not_confirmed target=%s attempt=%s",
                     post_id,
                     attempt,
                 )
-            return None
+            return await self._action_result(
+                "reply",
+                target_post_id=post_id,
+                failure_reason="submit_not_confirmed",
+                failure_stage="post_submit",
+                attempts=3,
+                media_paths=image_files,
+            )
         except Exception as exc:
             if self._is_driver_connection_closed(exc):
                 raise RuntimeError("playwright_driver_connection_closed") from exc
             if self._is_target_closed_error(exc):
                 raise RuntimeError("target_page_or_context_closed") from exc
             logger.warning("reply_action_failed target=%s error=%s", post_id, str(exc)[:260])
-            return None
+            return await self._action_result(
+                "reply",
+                target_post_id=post_id,
+                failure_reason="unknown_exception",
+                failure_stage="unknown",
+                media_paths=image_files,
+                diagnostic={"exception": type(exc).__name__, "message": str(exc)[:260]},
+            )
+
+    async def _reply_to_post_impl(
+        self,
+        platform_post_id: str,
+        text: str,
+        image_paths: ImagePathInput | None = None,
+    ) -> str | None:
+        result = await self.reply_to_post_detailed(platform_post_id, text, image_paths=image_paths)
+        return result.created_post_id if result.ok else None
 
     async def comment_post(
         self,
@@ -3002,6 +3738,87 @@ class XTextAdapter(SocialPlatformAdapter):
             "replies": await self.delete_all_replies(),
             "posts": await self.delete_all_posts(),
         }
+
+    async def delete_post_detailed(self, platform_post_id: str, kind: str = "post") -> ActionResult:
+        post_id = self._normalize_post_id(platform_post_id)
+        if not self.page:
+            return await self._action_result("delete", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+        if kind == "reply":
+            ok = await self.delete_reply(post_id)
+        elif kind == "repost":
+            ok = await self.delete_repost(post_id)
+        else:
+            ok = await self.delete_post(post_id)
+        return await self._action_result(
+            "delete",
+            ok=ok,
+            target_post_id=post_id,
+            failure_reason="" if ok else "target_post_not_found",
+            failure_stage="confirmation" if ok else "target_lookup",
+            raw={"kind": kind},
+        )
+
+    async def repost_post_detailed(self, platform_post_id: str) -> ActionResult:
+        post_id = self._normalize_post_id(platform_post_id)
+        if not self.page:
+            return await self._action_result("repost", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+        if not post_id or not await self._open_post_page(post_id):
+            return await self._action_result("repost", target_post_id=post_id, failure_reason="target_post_not_found", failure_stage="target_lookup")
+        try:
+            repost_btn = await self._find_first_enabled(ui.REPOST_BUTTONS, timeout_ms=1400)
+            if not repost_btn:
+                return await self._action_result("repost", target_post_id=post_id, failure_reason="repost_button_not_found", failure_stage="target_lookup")
+            await self._click(repost_btn)
+            await self.human.jitter(220, 680)
+            confirm = await self._find_first_enabled(
+                ['[data-testid="retweetConfirm"]', '[role="menuitem"]:has-text("Repost")', 'button:has-text("Repost")'],
+                timeout_ms=2200,
+            )
+            if confirm:
+                await self._click(confirm)
+                await self.human.jitter(400, 1100)
+            result = await self._action_result("repost", ok=True, target_post_id=post_id)
+            result.submit_clicked = True
+            result.confirmation_observed = True
+            return result
+        except Exception as exc:
+            if self._is_driver_connection_closed(exc):
+                raise RuntimeError("playwright_driver_connection_closed") from exc
+            if self._is_target_closed_error(exc):
+                raise RuntimeError("target_page_or_context_closed") from exc
+            return await self._action_result(
+                "repost",
+                target_post_id=post_id,
+                failure_reason="unknown_exception",
+                failure_stage="unknown",
+                diagnostic={"exception": type(exc).__name__, "message": str(exc)[:260]},
+            )
+
+    async def follow_user_detailed(self, username: str) -> ActionResult:
+        handle = self._normalize_username(username)
+        if not self.page:
+            return await self._action_result("follow", failure_reason="page_not_started", failure_stage="not_started", raw={"username": handle})
+        ok = await self.follow_user(handle)
+        return await self._action_result(
+            "follow",
+            ok=ok,
+            failure_reason="" if ok else (self.last_action_error.message if self.last_action_error else "target_user_not_found"),
+            failure_stage="confirmation" if ok else "target_lookup",
+            raw={"username": handle},
+        )
+
+    async def unfollow_user_detailed(self, username: str) -> ActionResult:
+        handle = self._normalize_username(username)
+        if not self.page:
+            return await self._action_result("unfollow", failure_reason="page_not_started", failure_stage="not_started", raw={"username": handle})
+        ok = await self.unfollow_user(handle)
+        return await self._action_result(
+            "unfollow",
+            ok=ok,
+            failure_reason="" if ok else (self.last_action_error.message if self.last_action_error else "target_user_not_found"),
+            failure_stage="confirmation" if ok else "target_lookup",
+            raw={"username": handle},
+        )
 
     async def follow_user(self, username: str) -> bool:
         self._clear_action_error()
