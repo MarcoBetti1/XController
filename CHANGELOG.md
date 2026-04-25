@@ -4,6 +4,7 @@ Use this file for the next feature or release notes.
 
 ## Unreleased
 
+- Add `AccountStats` and `account_stats(handle=None)` for public profile/account-level stats with compact count normalization and raw parse diagnostics.
 - Add service-integration data models: `ActionResult`, `ActionPreflight`, `TimelineReadResult`, `MediaPreflight`, `ControllerHealth`, and `ObservedMediaData`.
 - Add detailed action methods, action preflight, media preflight, thread-context reads, health checks, and debug snapshots for long-running browser services.
 - Add timeline tab control with detailed `For You` / `Following` read reporting.

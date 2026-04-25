@@ -160,6 +160,44 @@ class ObservedNotificationData:
 
 
 @dataclass
+class AccountStats:
+    """Normalized public account/profile stats captured from an X profile surface."""
+
+    handle: str
+    display_name: str = ""
+    profile_url: str = ""
+    followers: int = 0
+    following: int = 0
+    posts: int = 0
+    likes: int = 0
+    media: int = 0
+    verified: bool | None = None
+    bio: str = ""
+    location: str = ""
+    joined_at: str = ""
+    captured_at: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "handle": self.handle,
+            "display_name": self.display_name,
+            "profile_url": self.profile_url,
+            "followers": self.followers,
+            "following": self.following,
+            "posts": self.posts,
+            "likes": self.likes,
+            "media": self.media,
+            "verified": self.verified,
+            "bio": self.bio,
+            "location": self.location,
+            "joined_at": self.joined_at,
+            "captured_at": self.captured_at,
+            "raw": dict(self.raw),
+        }
+
+
+@dataclass
 class ActionResult:
     """Structured result for browser actions that can fail for UI-specific reasons."""
 
@@ -374,6 +412,11 @@ class SocialPlatformAdapter(ABC):
 
     @abstractmethod
     async def profile_recent_metrics(self, username: str, limit: int = 40) -> list[dict[str, int | str]]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def account_stats(self, handle: str | None = None) -> AccountStats:
+        """Return public account/profile-level stats for a handle or the authenticated account."""
         raise NotImplementedError
 
     @abstractmethod

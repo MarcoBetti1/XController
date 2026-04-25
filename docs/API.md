@@ -9,6 +9,7 @@ This package exposes one main controller class:
 
 Additional exported diagnostics types:
 
+- `AccountStats`
 - `ActionFailureInfo`
 - `ActionPreflight`
 - `ActionResult`
@@ -45,8 +46,11 @@ Additional exported diagnostics types:
 - `await read_unread_notifications(limit: int = 20) -> list[ObservedNotificationData]`
 - `await read_mentions(account_handle: str, hours_back: int = 2, limit: int = 120, ...)`
 - `await read_post_thread_context(post_id, limit: int = 6, ...) -> list[ObservedPostData]`
+- `await account_stats(handle: str | None = None) -> AccountStats`
 - `await profile_recent_metrics(username: str, limit: int = 40) -> list[dict[str, int | str]]`
 - `await post_metrics(platform_post_id: str) -> dict[str, int]`
+
+`account_stats()` samples public profile-level data: handle, display name, profile URL, followers, following, posts, likes, media, verified state, bio, location, and joined date text. When `handle` is omitted, it uses the authenticated account when detectable and falls back to the current profile surface if needed. Counts are normalized from compact X strings such as `1.2K`, `3.4M`, and `5B`. Unavailable fields remain zero or `None`, and `raw["warnings"]` plus `raw["current_url"]` explain what was missing. Browser transport failures such as `profile_in_use`, `playwright_driver_connection_closed`, and `target_page_or_context_closed` are raised as `RuntimeError`.
 
 ## Write / Engagement Operations
 
@@ -154,6 +158,25 @@ Convenience helpers:
 - `.reply_limited`: true when the detected author limit affects replies
 - `.author_limit_notice`: the detected X notice text
 - `.to_dict()`: returns a serializable copy
+
+`AccountStats` contains:
+
+- `handle`
+- `display_name`
+- `profile_url`
+- `followers`
+- `following`
+- `posts`
+- `likes`
+- `media`
+- `verified`
+- `bio`
+- `location`
+- `joined_at`
+- `captured_at`
+- `raw`
+
+`raw` includes `current_url`, `target_url`, `warnings`, and parser diagnostics such as count sources.
 
 ## Settings
 

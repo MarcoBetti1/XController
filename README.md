@@ -68,6 +68,7 @@ Primary exports:
 
 - `XController.XController`
 - `XController.XTextAdapter`
+- `XController.AccountStats`
 - `XController.ActionFailureInfo`
 - `XController.ActionPreflight`
 - `XController.ActionResult`
@@ -117,6 +118,7 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 - `controller.last_action_error` records the latest soft UI failure with action, URL, selector summary, and message.
 - Set `ControllerSettings(strict_ui_failures=True)` when you want soft UI failures to raise `UIActionError` instead of returning `False` or an empty result.
 - Use the `*_detailed()` write methods, `preflight_action()`, `read_timeline_detailed()`, `attach_images_preflight()`, `debug_snapshot()`, and `health_check()` for long-running service integrations that need structured diagnostics.
+- Use `account_stats(handle=None)` to sample public profile-level counts and metadata. It opens a temporary page when possible so periodic sampling does not move the controller's active feed page.
 - Set `ControllerSettings(playwright_mode="async")`, `playwright_mode="sync"`, or `prefer_sync_playwright=True/False` when the embedding service needs explicit event-loop/runtime ownership.
 
 ## CI/CD

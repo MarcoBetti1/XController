@@ -13,7 +13,7 @@ from functools import partial
 import asyncio
 import json
 from datetime import datetime, timedelta, timezone
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 from typing import Any, Callable, Sequence
 
 from playwright.async_api import BrowserContext, Page, async_playwright
@@ -22,6 +22,7 @@ from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as Sy
 from . import _ui_selectors as ui
 from ._diagnostics import ActionFailureInfo, UIActionError
 from .base import (
+    AccountStats,
     ActionPreflight,
     ActionResult,
     ControllerHealth,
@@ -51,6 +52,8 @@ class XTextAdapter(SocialPlatformAdapter):
     STATUS_URL_RE = re.compile(r"/status/([0-9]+)")
     PROFILE_URL_RE = re.compile(r"https?://(?:www\.)?x\.com/([^/?#]+)$")
     HANDLE_TEXT_RE = re.compile(r"@([A-Za-z0-9_]{1,15})")
+    ACCOUNT_HANDLE_RE = re.compile(r"^[A-Za-z0-9_]{1,15}$")
+    PROFILE_TITLE_RE = re.compile(r"^(.*?)\s+\(@([A-Za-z0-9_]{1,15})\)")
     PROGRAMMER_ERROR_TYPES = (AssertionError, AttributeError, KeyError, TypeError)
 
     def __init__(self, profile_path: str, settings: Any | None = None, proxy: str | None = None):
@@ -724,6 +727,87 @@ class XTextAdapter(SocialPlatformAdapter):
             return await self._run_sync(self._sync_page.evaluate, script)
         return await self.page.evaluate(script)
 
+    async def _new_context_page(self) -> Any | None:
+        if self._sync_mode:
+            if not self._sync_context:
+                return None
+            return await self._run_sync(self._sync_context.new_page)
+        if not self.context:
+            return None
+        return await self.context.new_page()
+
+    async def _close_context_page(self, page: Any | None) -> None:
+        if not page:
+            return
+        try:
+            if self._sync_mode:
+                await self._run_sync(page.close)
+            else:
+                await page.close()
+        except Exception:
+            pass
+
+    async def _page_url(self, page: Any | None) -> str:
+        if not page:
+            return ""
+        try:
+            if self._sync_mode:
+                return str(await self._run_sync(lambda: getattr(page, "url", "") or ""))
+            return str(getattr(page, "url", "") or "")
+        except Exception:
+            return ""
+
+    async def _page_wait_network_idle(self, page: Any | None, ms: int = 1200) -> None:
+        if not page:
+            return
+        try:
+            if self._sync_mode:
+                await self._run_sync(page.wait_for_load_state, "networkidle", timeout=ms)
+            else:
+                await page.wait_for_load_state("networkidle", timeout=ms)
+        except Exception:
+            pass
+
+    async def _page_goto(self, page: Any, url: str) -> None:
+        retries = max(1, int(self.NAV_RETRIES))
+        last_exc: Exception | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                if self._sync_mode:
+                    await self._run_sync(page.goto, url, wait_until="domcontentloaded")
+                else:
+                    await page.goto(url, wait_until="domcontentloaded")
+                await self.human.jitter(300, 900)
+                await self._page_wait_network_idle(page, 1400)
+                return
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "page_navigation_failed attempt=%s/%s url=%s error=%s",
+                    attempt,
+                    retries,
+                    url,
+                    str(exc)[:300],
+                )
+                if attempt >= retries or not self._is_retryable_error(exc):
+                    if self._is_profile_in_use_error(exc):
+                        raise RuntimeError("profile_in_use") from exc
+                    if self._is_driver_connection_closed(exc):
+                        raise RuntimeError("playwright_driver_connection_closed") from exc
+                    if self._is_target_closed_error(exc):
+                        raise RuntimeError("target_page_or_context_closed") from exc
+                    raise
+                await asyncio.sleep(min(1.8, 0.4 * attempt + 0.2))
+        if last_exc:
+            raise last_exc
+
+    async def _page_evaluate(self, page: Any | None, script: str) -> Any:
+        if not page:
+            return None
+        if self._sync_mode:
+            return await self._run_sync(page.evaluate, script)
+        return await page.evaluate(script)
+
     async def _scroll_snapshot(self) -> dict[str, float]:
         snapshot = await self._evaluate(
             """() => ({
@@ -850,6 +934,24 @@ class XTextAdapter(SocialPlatformAdapter):
 
     def _normalize_username(self, username: str) -> str:
         return str(username or "").strip().lstrip("@")
+
+    def _normalize_account_handle(self, username: str | None) -> str:
+        handle = self._normalize_username(str(username or ""))
+        if not handle or not self.ACCOUNT_HANDLE_RE.fullmatch(handle):
+            return ""
+        if handle.lower() in ui.RESERVED_PROFILE_PATHS:
+            return ""
+        return handle
+
+    def _profile_handle_from_url(self, url: str) -> str:
+        try:
+            parsed = urlparse(str(url or ""))
+        except Exception:
+            return ""
+        parts = [part for part in parsed.path.split("/") if part]
+        if not parts:
+            return ""
+        return self._normalize_account_handle(parts[0])
 
     def _normalize_image_paths(self, image_paths: ImagePathInput | None) -> list[str]:
         if image_paths is None:
@@ -2527,7 +2629,7 @@ class XTextAdapter(SocialPlatformAdapter):
         return []
 
     def _parse_count_token(self, raw: str) -> int:
-        token = (raw or "").strip().lower().replace(",", "")
+        token = (raw or "").strip().lower().replace(",", "").replace(" ", "")
         if not token:
             return 0
         mult = 1
@@ -2600,6 +2702,313 @@ class XTextAdapter(SocialPlatformAdapter):
                 continue
         metrics["comments"] = metrics["replies"]
         return metrics
+
+    def _extract_labeled_count(self, text: str, labels: Sequence[str]) -> tuple[int, str] | None:
+        compact = re.sub(r"\s+", " ", str(text or "")).strip()
+        if not compact:
+            return None
+        token = r"(\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?)"
+        for label in labels:
+            escaped = re.escape(label)
+            for pattern in (
+                rf"{token}\s+{escaped}\b",
+                rf"\b{escaped}\b\s+{token}",
+            ):
+                match = re.search(pattern, compact, flags=re.IGNORECASE)
+                if match:
+                    return self._parse_count_token(match.group(1)), match.group(0)
+        return None
+
+    def _extract_first_count(self, text: str) -> tuple[int, str] | None:
+        compact = re.sub(r"\s+", " ", str(text or "")).strip()
+        match = re.search(r"\b(\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?)\b", compact)
+        if not match:
+            return None
+        return self._parse_count_token(match.group(1)), match.group(1)
+
+    def _link_path_matches(self, href: str, endings: Sequence[str]) -> bool:
+        try:
+            path = urlparse(str(href or "")).path.rstrip("/").lower()
+        except Exception:
+            return False
+        return any(path.endswith(f"/{ending.strip('/').lower()}") for ending in endings)
+
+    def _extract_account_count(
+        self,
+        payload: dict[str, Any],
+        *,
+        labels: Sequence[str],
+        link_endings: Sequence[str] = (),
+        allow_text_fallback: bool = True,
+    ) -> tuple[int, str] | None:
+        links = payload.get("links")
+        if link_endings and isinstance(links, list):
+            for item in links:
+                if not isinstance(item, dict):
+                    continue
+                href = str(item.get("href") or "")
+                if not self._link_path_matches(href, link_endings):
+                    continue
+                text = " ".join(
+                    str(item.get(key) or "")
+                    for key in ("text", "aria_label", "title")
+                    if str(item.get(key) or "").strip()
+                )
+                found = self._extract_labeled_count(text, labels) or self._extract_first_count(text)
+                if found is not None:
+                    return found[0], f"link:{href or '-'}:{found[1]}"
+
+        if not allow_text_fallback:
+            return None
+
+        text_candidates = [
+            *[str(value or "") for value in payload.get("user_name_blocks", []) if isinstance(value, str)],
+            str(payload.get("profile_text") or ""),
+            str(payload.get("meta_description") or ""),
+            str(payload.get("title") or ""),
+        ]
+        for text in text_candidates:
+            found = self._extract_labeled_count(text, labels)
+            if found is not None:
+                return found[0], f"text:{found[1]}"
+        return None
+
+    def _profile_title_identity(self, title: str) -> tuple[str, str]:
+        match = self.PROFILE_TITLE_RE.search(str(title or "").strip())
+        if not match:
+            return "", ""
+        return match.group(1).strip(), self._normalize_account_handle(match.group(2))
+
+    def _profile_identity_from_payload(self, requested_handle: str, payload: dict[str, Any]) -> tuple[str, str]:
+        title_display, title_handle = self._profile_title_identity(str(payload.get("title") or ""))
+        url_handle = self._profile_handle_from_url(str(payload.get("current_url") or ""))
+        resolved_handle = title_handle or url_handle or requested_handle
+        display_name = ""
+        blocks = payload.get("user_name_blocks")
+        if isinstance(blocks, list):
+            for block in blocks:
+                lines = [line.strip() for line in str(block or "").splitlines() if line.strip()]
+                if not lines:
+                    continue
+                handle_index = -1
+                for idx, line in enumerate(lines):
+                    if self._normalize_account_handle(line).lower() == resolved_handle.lower():
+                        handle_index = idx
+                        break
+                if handle_index > 0:
+                    display_name = lines[handle_index - 1]
+                    break
+                for line in lines:
+                    lowered = line.lower()
+                    if line.startswith("@") or lowered.endswith(" posts") or lowered in {"posts", "replies", "media", "likes"}:
+                        continue
+                    if self._extract_labeled_count(line, ("post", "posts", "follower", "followers", "following")):
+                        continue
+                    display_name = line
+                    break
+                if display_name:
+                    break
+        if not display_name:
+            display_name = title_display
+        return resolved_handle, display_name
+
+    def _account_stats_from_payload(
+        self,
+        requested_handle: str,
+        payload: dict[str, Any],
+        captured_at: str,
+        raw_base: dict[str, Any] | None = None,
+    ) -> AccountStats:
+        raw: dict[str, Any] = dict(raw_base or {})
+        warnings = list(raw.get("warnings") or [])
+        raw["warnings"] = warnings
+        raw["dom"] = payload
+        raw["current_url"] = str(payload.get("current_url") or raw.get("current_url") or "")
+
+        handle, display_name = self._profile_identity_from_payload(requested_handle, payload)
+        if not handle:
+            handle = requested_handle
+            warnings.append("profile_handle_unavailable")
+        profile_url = f"{self.BASE_URL}/{handle}" if handle else str(payload.get("current_url") or "")
+
+        count_specs = {
+            "followers": {"labels": ("followers", "follower"), "link_endings": ("followers", "verified_followers"), "allow_text_fallback": True},
+            "following": {"labels": ("following",), "link_endings": ("following",), "allow_text_fallback": True},
+            "posts": {"labels": ("posts", "post"), "link_endings": (), "allow_text_fallback": True},
+            "likes": {"labels": ("likes", "like"), "link_endings": ("likes",), "allow_text_fallback": False},
+            "media": {"labels": ("media",), "link_endings": ("media",), "allow_text_fallback": False},
+        }
+        counts: dict[str, int] = {}
+        count_sources: dict[str, str] = {}
+        for key, spec in count_specs.items():
+            found = self._extract_account_count(
+                payload,
+                labels=spec["labels"],  # type: ignore[arg-type]
+                link_endings=spec["link_endings"],  # type: ignore[arg-type]
+                allow_text_fallback=bool(spec["allow_text_fallback"]),
+            )
+            if found is None:
+                counts[key] = 0
+                warnings.append(f"{key}_count_unavailable")
+            else:
+                counts[key], count_sources[key] = found
+        raw["count_sources"] = count_sources
+
+        verified_value = payload.get("verified")
+        verified = bool(verified_value) if verified_value is not None else None
+        if verified is None:
+            warnings.append("verified_state_unavailable")
+
+        return AccountStats(
+            handle=handle,
+            display_name=display_name,
+            profile_url=profile_url,
+            followers=counts["followers"],
+            following=counts["following"],
+            posts=counts["posts"],
+            likes=counts["likes"],
+            media=counts["media"],
+            verified=verified,
+            bio=str(payload.get("bio") or ""),
+            location=str(payload.get("location") or ""),
+            joined_at=str(payload.get("joined_at") or ""),
+            captured_at=captured_at,
+            raw=raw,
+        )
+
+    def _account_stats_dom_script(self) -> str:
+        return """() => {
+            const compact = value => String(value || '').replace(/\\s+/g, ' ').trim();
+            const visibleText = node => {
+                if (!node) return '';
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                if (style && (style.display === 'none' || style.visibility === 'hidden')) return '';
+                if (rect && rect.width === 0 && rect.height === 0) return '';
+                return compact(node.innerText || node.textContent || '');
+            };
+            const root = document.querySelector('main [data-testid="primaryColumn"]') || document.querySelector('main') || document.body;
+            const firstText = selectors => {
+                for (const selector of selectors) {
+                    const node = root.querySelector(selector) || document.querySelector(selector);
+                    const text = visibleText(node);
+                    if (text) return text;
+                }
+                return '';
+            };
+            const links = Array.from(root.querySelectorAll('a[href]')).slice(0, 240).map(link => ({
+                href: link.href || link.getAttribute('href') || '',
+                text: visibleText(link),
+                aria_label: link.getAttribute('aria-label') || '',
+                title: link.getAttribute('title') || ''
+            }));
+            const userNameBlocks = Array.from(root.querySelectorAll('[data-testid="UserName"]'))
+                .slice(0, 12)
+                .map(visibleText)
+                .filter(Boolean);
+            const verifiedNode = root.querySelector(
+                '[data-testid="icon-verified"], svg[aria-label*="Verified"], [aria-label*="Verified account"], [aria-label*="Blue verified"]'
+            );
+            return {
+                current_url: window.location.href,
+                title: document.title || '',
+                meta_description: document.querySelector('meta[name="description"]')?.getAttribute('content') || '',
+                profile_text: visibleText(root).slice(0, 12000),
+                user_name_blocks: userNameBlocks,
+                bio: firstText(['[data-testid="UserDescription"]']),
+                location: firstText(['[data-testid="UserLocation"]']),
+                joined_at: firstText(['[data-testid="UserJoinDate"]']),
+                verified: Boolean(verifiedNode),
+                links
+            };
+        }"""
+
+    async def _profile_payload_from_page(self, page: Any | None) -> dict[str, Any]:
+        value = await self._page_evaluate(page, self._account_stats_dom_script())
+        return value if isinstance(value, dict) else {}
+
+    def _account_stats_error(
+        self,
+        handle: str,
+        captured_at: str,
+        reason: str,
+        raw: dict[str, Any] | None = None,
+    ) -> AccountStats:
+        details = dict(raw or {})
+        warnings = list(details.get("warnings") or [])
+        warnings.append(reason)
+        details["warnings"] = warnings
+        details["error"] = reason
+        return AccountStats(handle=handle, profile_url=f"{self.BASE_URL}/{handle}" if handle else "", captured_at=captured_at, raw=details)
+
+    async def account_stats(self, handle: str | None = None) -> AccountStats:
+        captured_at = datetime.now(timezone.utc).isoformat()
+        requested_handle = self._normalize_account_handle(handle)
+        raw: dict[str, Any] = {
+            "requested_handle": handle or "",
+            "normalized_requested_handle": requested_handle,
+            "warnings": [],
+        }
+
+        if handle is not None and not requested_handle:
+            return self._account_stats_error("", captured_at, "invalid_handle", raw)
+
+        if not self.page:
+            return self._account_stats_error(requested_handle, captured_at, "page_not_started", raw)
+
+        target_handle = requested_handle
+        if not target_handle:
+            detected = await self._get_authenticated_handle()
+            target_handle = self._normalize_account_handle(detected)
+            raw["detected_authenticated_handle"] = detected or ""
+        if not target_handle:
+            current_handle = self._profile_handle_from_url(await self._page_url(self.page))
+            target_handle = current_handle
+            if current_handle:
+                raw["warnings"].append("authenticated_handle_unavailable_used_current_profile")
+        if not target_handle:
+            return self._account_stats_error("", captured_at, "account_handle_unavailable", raw)
+
+        target_url = f"{self.BASE_URL}/{target_handle}"
+        raw["target_url"] = target_url
+
+        stats_page = None
+        temporary_page = False
+        active_page_used = False
+        active_previous_url = await self._page_url(self.page)
+        payload: dict[str, Any] = {}
+        try:
+            stats_page = await self._new_context_page()
+            temporary_page = stats_page is not None
+            if stats_page is None:
+                raw["warnings"].append("temporary_page_unavailable_used_active_page")
+                active_page_used = True
+                await self._goto(target_url)
+                stats_page = self.page
+            else:
+                await self._page_goto(stats_page, target_url)
+            payload = await self._profile_payload_from_page(stats_page)
+            if not payload:
+                return self._account_stats_error(target_handle, captured_at, "profile_payload_unavailable", raw)
+        except Exception as exc:
+            if self._is_profile_in_use_error(exc):
+                raise RuntimeError("profile_in_use") from exc
+            if self._is_driver_connection_closed(exc):
+                raise RuntimeError("playwright_driver_connection_closed") from exc
+            if self._is_target_closed_error(exc):
+                raise RuntimeError("target_page_or_context_closed") from exc
+            raw["exception_type"] = type(exc).__name__
+            raw["exception"] = str(exc)[:400]
+            return self._account_stats_error(target_handle, captured_at, "profile_stats_capture_failed", raw)
+        finally:
+            if temporary_page:
+                await self._close_context_page(stats_page)
+            elif active_page_used and active_previous_url and active_previous_url != target_url and self.page:
+                with contextlib.suppress(Exception):
+                    await self._goto(active_previous_url)
+                    raw["restored_url"] = active_previous_url
+
+        return self._account_stats_from_payload(target_handle, payload, captured_at, raw)
 
     async def profile_recent_metrics(self, username: str, limit: int = 40) -> list[dict[str, int | str]]:
         if not self.page:
