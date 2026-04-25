@@ -3,6 +3,7 @@ from importlib.metadata import PackageNotFoundError, version
 from .adapter import XController, XTextAdapter
 from ._diagnostics import ActionFailureInfo, UIActionError
 from .base import (
+    AccountStats,
     ActionPreflight,
     ActionResult,
     ControllerHealth,
@@ -21,6 +22,7 @@ except PackageNotFoundError:
     __version__ = "0.1.0"
 
 __all__ = [
+    "AccountStats",
     "ActionFailureInfo",
     "ActionPreflight",
     "ActionResult",
