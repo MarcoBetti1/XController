@@ -181,7 +181,7 @@ class NotificationReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(notifications[0].unread)
         self.assertEqual(notifications[0].raw["metrics"]["likes"], 2)
 
-    async def test_read_unread_notifications_filters_read_cards(self) -> None:
+    async def test_read_notifications_unread_only_filters_read_cards(self) -> None:
         self.adapter.page = FakePage(
             [
                 FakeArticle(
@@ -203,7 +203,7 @@ class NotificationReadTests(unittest.IsolatedAsyncioTestCase):
             ]
         )
 
-        notifications = await self.adapter.read_unread_notifications(limit=1)
+        notifications = await self.adapter.read_notifications(limit=1, unread_only=True)
 
         self.assertEqual(len(notifications), 1)
         self.assertEqual(notifications[0].platform_post_id, "102")

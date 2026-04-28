@@ -403,11 +403,7 @@ class SocialPlatformAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def recover_home(self, force_nav: bool = False) -> bool:
-        raise NotImplementedError
-
-    @abstractmethod
-    async def refresh_home(self, force_nav: bool = False) -> bool:
+    async def return_home(self, force_refresh: bool = False) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -431,14 +427,8 @@ class SocialPlatformAdapter(ABC):
     async def read_notifications(self, limit: int = 20, unread_only: bool = False) -> list[ObservedNotificationData]:
         raise NotImplementedError
 
-    async def read_unread_notifications(self, limit: int = 20) -> list[ObservedNotificationData]:
-        return await self.read_notifications(limit=limit, unread_only=True)
-
     @abstractmethod
     async def post_text(self, text: str, image_paths: Any | None = None) -> str | None:
-        raise NotImplementedError
-
-    async def post_image(self, image_paths: Any, text: str = "") -> str | None:
         raise NotImplementedError
 
     async def quote_post(
@@ -452,14 +442,6 @@ class SocialPlatformAdapter(ABC):
     @abstractmethod
     async def like_post(self, platform_post_id: str) -> bool:
         raise NotImplementedError
-
-    async def comment_post(
-        self,
-        platform_post_id: str,
-        text: str,
-        image_paths: Any | None = None,
-    ) -> str | None:
-        return await self.reply_to_post(platform_post_id, text, image_paths=image_paths)
 
     @abstractmethod
     async def reply_to_post(

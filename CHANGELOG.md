@@ -15,3 +15,5 @@ Use this file for the next feature or release notes.
 - Detect author-limited reply notices such as "Only some accounts can reply" in read results.
 - Add recent and unread notification reads.
 - Add local image attachments for new posts, replies, and quote posts.
+- Replace duplicate home and notification aliases with `return_home(force_refresh=False)` and `read_notifications(unread_only=True)`.
+- Remove `comment_post()` in favor of canonical `reply_to_post()`.
