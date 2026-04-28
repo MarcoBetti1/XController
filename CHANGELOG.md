@@ -17,3 +17,7 @@ Use this file for the next feature or release notes.
 - Add local image attachments for new posts, replies, and quote posts.
 - Replace duplicate home and notification aliases with `return_home(force_refresh=False)` and `read_notifications(unread_only=True)`.
 - Remove `comment_post()` in favor of canonical `reply_to_post()`.
+- Add `SyncXController` / `XControllerService` for synchronous service callers.
+- Add `LoginState` and passive `login_state()` selector-owned login detection.
+- Add `MediaCaptureData` and `capture_post_media()` for local post media artifacts.
+- Add `settle_after_action()` for opt-in post-action home-tab settling.

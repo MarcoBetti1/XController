@@ -1,12 +1,15 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from .adapter import XController, XTextAdapter
+from .sync import SyncXController, XControllerService
 from ._diagnostics import ActionFailureInfo, UIActionError
 from .base import (
     AccountStats,
     ActionPreflight,
     ActionResult,
     ControllerHealth,
+    LoginState,
+    MediaCaptureData,
     MediaPreflight,
     ObservedMediaData,
     ObservedNotificationData,
@@ -28,14 +31,18 @@ __all__ = [
     "ActionResult",
     "ControllerSettings",
     "ControllerHealth",
+    "LoginState",
+    "MediaCaptureData",
     "MediaPreflight",
     "ObservedMediaData",
     "ObservedNotificationData",
     "ObservedPostData",
     "SocialPlatformAdapter",
+    "SyncXController",
     "TimelineReadResult",
     "UIActionError",
     "XController",
+    "XControllerService",
     "XTextAdapter",
     "__version__",
 ]

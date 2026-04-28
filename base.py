@@ -34,6 +34,30 @@ class ObservedMediaData:
 
 
 @dataclass
+class MediaCaptureData:
+    """Local artifact captured from media attached to a post."""
+
+    kind: str
+    path: str
+    target_post_id: str
+    source_url: str = ""
+    thumbnail_url: str = ""
+    alt_text: str = ""
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "path": self.path,
+            "target_post_id": self.target_post_id,
+            "source_url": self.source_url,
+            "thumbnail_url": self.thumbnail_url,
+            "alt_text": self.alt_text,
+            "raw": dict(self.raw),
+        }
+
+
+@dataclass
 class ObservedPostData:
     """Normalized post payload returned by read/search operations."""
 
@@ -377,6 +401,30 @@ class ControllerHealth:
         }
 
 
+@dataclass
+class LoginState:
+    """Passive login/session state without forcing navigation."""
+
+    logged_in: bool
+    page_state: str
+    url: str = ""
+    browser_started: bool = False
+    active_home_tab: str = ""
+    login_required: bool = False
+    raw: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "logged_in": self.logged_in,
+            "page_state": self.page_state,
+            "url": self.url,
+            "browser_started": self.browser_started,
+            "active_home_tab": self.active_home_tab,
+            "login_required": self.login_required,
+            "raw": dict(self.raw),
+        }
+
+
 class SocialPlatformAdapter(ABC):
     """Base async interface for click-driven social platform automation."""
 
@@ -403,7 +451,20 @@ class SocialPlatformAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def login_state(self) -> LoginState:
+        raise NotImplementedError
+
+    @abstractmethod
     async def return_home(self, force_refresh: bool = False) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def settle_after_action(
+        self,
+        tab: str = "for_you",
+        force_refresh: bool = False,
+        reset_scroll: bool = False,
+    ) -> bool:
         raise NotImplementedError
 
     @abstractmethod
@@ -413,6 +474,15 @@ class SocialPlatformAdapter(ABC):
     @abstractmethod
     async def account_stats(self, handle: str | None = None) -> AccountStats:
         """Return public account/profile-level stats for a handle or the authenticated account."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def capture_post_media(
+        self,
+        platform_post_id: str,
+        output_dir: str,
+        frame_count: int = 3,
+    ) -> list[MediaCaptureData]:
         raise NotImplementedError
 
     @abstractmethod

@@ -8,6 +8,7 @@ The package is structured around one stateful adapter that owns:
 - browser/profile recovery
 - shared DOM interaction helpers
 - X-specific navigation and action flows
+- login-state detection and media capture
 
 The DOM selector surface and soft-failure diagnostics are now split into dedicated internal modules so the adapter remains the orchestrator instead of also being the source of truth for every selector and diagnostic type.
 
@@ -19,6 +20,8 @@ The library favors click-driven navigation first and uses direct URL navigation 
 
 - `adapter.py`
   Main controller implementation and X-specific flow logic.
+- `sync.py`
+  Synchronous facade that owns an event-loop thread and forwards stable service APIs.
 - `_ui_selectors.py`
   Centralized selector and UI rule tables for X-specific DOM matching.
 - `_diagnostics.py`
@@ -46,7 +49,9 @@ The current maintenance boundary is:
 - `_ui_selectors.py`
   Selector drift and X wording changes.
 - `adapter.py`
-  Flow orchestration, retries, state transitions, detailed service APIs, and browser snapshots.
+  Flow orchestration, retries, state transitions, detailed service APIs, browser snapshots, passive login state, and post media capture.
+- `sync.py`
+  Synchronous caller contract only. It should not duplicate DOM selectors or browser flow logic.
 - `_diagnostics.py`
   Soft-failure recording and strict-mode escalation.
 
@@ -60,6 +65,14 @@ Long-running service callers should prefer:
   Capture stable failure stages and reasons for write actions while preserving legacy compact methods.
 - `read_timeline_detailed()`
   Report requested tab, active tab, URL, article count, and warnings for home timeline reads.
+- `SyncXController`
+  Call the same service APIs from synchronous runtimes without a downstream event-loop bridge.
+- `login_state()`
+  Get passive login/session status without importing selector internals.
+- `capture_post_media()`
+  Capture local post media artifacts for downstream media analysis.
+- `settle_after_action()`
+  Settle back to a requested home tab after write/action flows when a service needs a known surface.
 - `debug_snapshot()` and `health_check()`
   Capture current browser state without forcing downstream wrappers to duplicate selector probes.
 
@@ -71,6 +84,7 @@ The main cleanup rule applied here was: keep the public behavior stable, but con
 - `reply_to_post()` is the only public reply method name.
 - `return_home(force_refresh=False)` is the single public home-recovery entrypoint.
 - Image-capable post, reply, and quote methods accept `image_paths`; image-only wrappers are deprecated compatibility helpers.
+- Detailed action methods report their observed final surface, but callers that require a known feed surface should call `settle_after_action()`.
 
 ## Branch Separation
 

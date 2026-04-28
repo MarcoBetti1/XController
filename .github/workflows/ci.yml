@@ -68,12 +68,23 @@ jobs:
         run: |
           python - <<'PY'
           import XController as XController_pkg
-          from XController import ActionResult, ControllerSettings, ObservedPostData, XController as XControllerClass
+          from XController import (
+              ActionResult,
+              ControllerSettings,
+              LoginState,
+              MediaCaptureData,
+              ObservedPostData,
+              SyncXController,
+              XController as XControllerClass,
+          )
 
           assert XController_pkg.__version__
           assert ActionResult
           assert ControllerSettings
+          assert LoginState
+          assert MediaCaptureData
           assert ObservedPostData
+          assert SyncXController
           assert XControllerClass
           PY
 

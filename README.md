@@ -14,6 +14,8 @@ It is designed for reuse from scripts and services instead of a single hard-code
 - Timeline, search, notifications, mentions, and visible-post reads
 - Post, view, like, reply, quote, follow, and unfollow actions
 - Image attachments for new posts, replies, and quote posts
+- Post media capture for downstream media analysis
+- Synchronous service facade for non-async runtimes
 - Verified delete flows for own posts, replies, and reposts
 - Bulk cleanup helpers for posts, replies, reposts, or all content
 - Post metric scraping
@@ -68,12 +70,16 @@ Primary exports:
 
 - `XController.XController`
 - `XController.XTextAdapter`
+- `XController.SyncXController`
+- `XController.XControllerService`
 - `XController.AccountStats`
 - `XController.ActionFailureInfo`
 - `XController.ActionPreflight`
 - `XController.ActionResult`
 - `XController.ControllerSettings`
 - `XController.ControllerHealth`
+- `XController.LoginState`
+- `XController.MediaCaptureData`
 - `XController.MediaPreflight`
 - `XController.ObservedMediaData`
 - `XController.ObservedNotificationData`
@@ -84,6 +90,7 @@ Primary exports:
 Compatibility notes:
 
 - `XController` and `XTextAdapter` are the same class.
+- `SyncXController` and `XControllerService` are the same synchronous facade.
 - `reply_to_post()` is the canonical X-specific reply method.
 - `return_home(force_refresh=False)` replaces the older recovery/refresh split.
 - `read_notifications(unread_only=True)` replaces the unread-notification alias.
@@ -92,6 +99,7 @@ Compatibility notes:
 ## Project Layout
 
 - `adapter.py`: main X controller implementation
+- `sync.py`: synchronous service facade over the async controller APIs
 - `_ui_selectors.py`: centralized X DOM selector and UI rule tables
 - `_diagnostics.py`: soft-failure diagnostics and strict-mode error types
 - `base.py`: shared adapter contract and post model
@@ -120,8 +128,12 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 - `controller.last_action_error` records the latest soft UI failure with action, URL, selector summary, and message.
 - Set `ControllerSettings(strict_ui_failures=True)` when you want soft UI failures to raise `UIActionError` instead of returning `False` or an empty result.
 - Use the `*_detailed()` write methods, `preflight_action()`, `read_timeline_detailed()`, `attach_images_preflight()`, `debug_snapshot()`, and `health_check()` for long-running service integrations that need structured diagnostics.
+- Use `SyncXController` when a service needs synchronous calls without owning an event-loop thread or coroutine bridge.
+- Use `login_state()` for passive login detection without importing selector internals.
+- Use `capture_post_media()` to create local artifacts for image cards and representative video frames attached to a post.
+- Use `settle_after_action(tab="for_you", force_refresh=..., reset_scroll=...)` when a service needs a known home surface after a write/action flow.
 - Use `account_stats(handle=None)` to sample public profile-level counts and metadata. It opens a temporary page when possible so periodic sampling does not move the controller's active feed page.
-- Set `ControllerSettings(playwright_mode="async")`, `playwright_mode="sync"`, or `prefer_sync_playwright=True/False` when the embedding service needs explicit event-loop/runtime ownership.
+- Set `ControllerSettings(playwright_mode="async")`, `playwright_mode="sync"`, or `prefer_sync_playwright=True/False` when the embedding service needs explicit Playwright transport ownership. The synchronous facade controls the caller contract separately.
 
 ## CI/CD
 
