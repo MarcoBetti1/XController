@@ -68,7 +68,9 @@ The main cleanup rule applied here was: keep the public behavior stable, but con
 ## Compatibility Choices
 
 - `XController` remains an alias of `XTextAdapter`.
-- `comment_post()` is still supported, but both public reply methods share one internal implementation now.
+- `reply_to_post()` is the only public reply method name.
+- `return_home(force_refresh=False)` is the single public home-recovery entrypoint.
+- Image-capable post, reply, and quote methods accept `image_paths`; image-only wrappers are deprecated compatibility helpers.
 
 ## Branch Separation
 

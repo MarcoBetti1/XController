@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import AsyncMock
 
 try:
     from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, MediaPreflight, TimelineReadResult, XTextAdapter
@@ -118,6 +119,44 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(like.failure_stage, "not_started")
         self.assertFalse(post.ok)
         self.assertEqual(post.action, "post")
+
+    async def test_return_home_is_public_navigation_entrypoint(self) -> None:
+        adapter = self._adapter()
+
+        self.assertFalse(await adapter.return_home())
+
+    async def test_timeline_force_refresh_uses_return_home_reload_path(self) -> None:
+        class FakePage:
+            url = "https://x.com/home"
+
+            def locator(self, _selector: str) -> object:
+                return object()
+
+        class NoopHuman:
+            async def jitter(self, *_args, **_kwargs) -> None:
+                return None
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.human = NoopHuman()
+        adapter.return_home = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        adapter._select_home_tab = AsyncMock(return_value=True)
+        adapter._active_home_tab = AsyncMock(return_value="for_you")
+        adapter._count_locator = AsyncMock(return_value=0)
+        adapter._collect_posts_from_current_page = AsyncMock(return_value=[])
+        adapter._goto = AsyncMock()
+        adapter._current_state_name = AsyncMock(return_value="home")
+
+        result = await adapter.read_timeline_detailed(limit=1, force_refresh=True)
+
+        adapter.return_home.assert_awaited_once_with(force_refresh=True)
+        self.assertTrue(result.force_refreshed)
+
+    def test_removed_alias_methods_are_not_public(self) -> None:
+        adapter = self._adapter()
+
+        for name in ("read_unread_notifications", "recover_home", "refresh_home", "comment_post"):
+            self.assertFalse(hasattr(adapter, name), name)
 
 
 if __name__ == "__main__":

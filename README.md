@@ -10,7 +10,7 @@ It is designed for reuse from scripts and services instead of a single hard-code
 
 - Persistent Chromium profile sessions
 - Login checks and login-page handoff
-- Home/timeline recovery
+- Home/timeline recovery with optional forced refresh
 - Timeline, search, notifications, mentions, and visible-post reads
 - Post, view, like, reply, quote, follow, and unfollow actions
 - Image attachments for new posts, replies, and quote posts
@@ -81,11 +81,13 @@ Primary exports:
 - `XController.TimelineReadResult`
 - `XController.UIActionError`
 
-Compatibility aliases:
+Compatibility notes:
 
 - `XController` and `XTextAdapter` are the same class.
-- `comment_post()` and `reply_to_post()` are both supported. `reply_to_post()` is the clearer canonical name for X.
-- `post_image()`, `reply_with_image()`, and `quote_post_with_image()` are convenience wrappers around the image-capable post/reply/quote methods.
+- `reply_to_post()` is the canonical X-specific reply method.
+- `return_home(force_refresh=False)` replaces the older recovery/refresh split.
+- `read_notifications(unread_only=True)` replaces the unread-notification alias.
+- `post_text()`, `reply_to_post()`, and `quote_post()` accept `image_paths`; the image-only convenience wrappers are deprecated.
 
 ## Project Layout
 

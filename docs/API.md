@@ -30,10 +30,8 @@ Additional exported diagnostics types:
 
 ## Navigation / Recovery
 
-- `await recover_home(force_nav: bool = False) -> bool`
-  Returns to home if possible without forcing a reload.
-- `await refresh_home(force_nav: bool = False) -> bool`
-  Returns home and attempts a reload.
+- `await return_home(force_refresh: bool = False) -> bool`
+  Returns to home if possible. When `force_refresh=True`, the controller reloads the home surface after returning.
 
 ## Read Operations
 
@@ -43,26 +41,25 @@ Additional exported diagnostics types:
 - `await search_posts(query: str, limit: int = 10) -> list[ObservedPostData]`
 - `await read_visible_posts(limit: int = 20) -> list[ObservedPostData]`
 - `await read_notifications(limit: int = 20, unread_only: bool = False) -> list[ObservedNotificationData]`
-- `await read_unread_notifications(limit: int = 20) -> list[ObservedNotificationData]`
 - `await read_mentions(account_handle: str, hours_back: int = 2, limit: int = 120, ...)`
 - `await read_post_thread_context(post_id, limit: int = 6, ...) -> list[ObservedPostData]`
 - `await account_stats(handle: str | None = None) -> AccountStats`
 - `await profile_recent_metrics(username: str, limit: int = 40) -> list[dict[str, int | str]]`
 - `await post_metrics(platform_post_id: str) -> dict[str, int]`
 
+`read_notifications(unread_only=True)` returns unread notifications without a separate alias method.
+
+`read_timeline_detailed(force_refresh=True)` performs a home reload before collecting timeline posts. `reset_scroll=True` only presses Home to read the newest visible DOM items at the top of the feed; it does not reload the UI.
+
 `account_stats()` samples public profile-level data: handle, display name, profile URL, followers, following, posts, likes, media, verified state, bio, location, and joined date text. When `handle` is omitted, it uses the authenticated account when detectable and falls back to the current profile surface if needed. Counts are normalized from compact X strings such as `1.2K`, `3.4M`, and `5B`. Unavailable fields remain zero or `None`, and `raw["warnings"]` plus `raw["current_url"]` explain what was missing. Browser transport failures such as `profile_in_use`, `playwright_driver_connection_closed`, and `target_page_or_context_closed` are raised as `RuntimeError`.
 
 ## Write / Engagement Operations
 
 - `await post_text(text: str, image_paths: str | Sequence[str] | None = None) -> str | None`
-- `await post_image(image_paths: str | Sequence[str], text: str = "") -> str | None`
 - `await view_post(platform_post_id: str, dwell_seconds: tuple[int, int] = (3, 8)) -> bool`
 - `await like_post(platform_post_id: str) -> bool`
 - `await reply_to_post(platform_post_id: str, text: str, image_paths: str | Sequence[str] | None = None) -> str | None`
-- `await reply_with_image(platform_post_id: str, image_paths: str | Sequence[str], text: str = "") -> str | None`
-- `await comment_post(platform_post_id: str, text: str, image_paths: str | Sequence[str] | None = None) -> str | None`
 - `await quote_post(platform_post_id: str, text: str = "", image_paths: str | Sequence[str] | None = None) -> str | None`
-- `await quote_post_with_image(platform_post_id: str, image_paths: str | Sequence[str], text: str = "") -> str | None`
 - `await delete_post(platform_post_id: str) -> bool`
 - `await delete_reply(platform_post_id: str) -> bool`
 - `await delete_repost(platform_post_id: str) -> bool`
@@ -98,12 +95,10 @@ Preflight and diagnostics:
 ## Compatibility Guidance
 
 - `reply_to_post()` is the canonical X-specific method name.
-- `comment_post()` is kept for backward compatibility and delegates to the same reply implementation.
-- `post_text()`, `reply_to_post()`, and `quote_post()` accept `image_paths` for local image uploads.
-  Convenience wrappers are available when the image is the primary payload.
-- `recover_home()` and `refresh_home()` are intentionally both kept.
-  `recover_home()` is lighter-weight.
-  `refresh_home()` includes a reload attempt.
+- `comment_post()` has been removed. Use `reply_to_post()`.
+- `read_unread_notifications()` has been removed. Use `read_notifications(unread_only=True)`.
+- `recover_home()` and `refresh_home()` have been replaced by `return_home(force_refresh=False)`.
+- `post_text()`, `reply_to_post()`, and `quote_post()` accept `image_paths` for local image uploads. `post_image()`, `reply_with_image()`, and `quote_post_with_image()` remain only as deprecated compatibility wrappers.
 - Delete methods verify ownership before deleting authored content.
   `delete_repost()` verifies repost state instead of authorship because reposts target another author's post.
 - Bulk delete methods run until the relevant profile surface is exhausted; they no longer expose a caller-supplied item limit.
@@ -112,7 +107,7 @@ Preflight and diagnostics:
 
 `XTextAdapter.last_action_error` holds the latest soft UI failure that was converted into a boolean/empty-result outcome.
 
-For long-running services, prefer detailed methods over legacy compact methods. The compact methods are kept for compatibility and return the same shapes as before.
+For long-running services, prefer detailed methods over legacy compact methods. The compact methods are kept for compatibility and return the same shapes as before; a future major version is expected to make the `ActionResult`-returning methods the default.
 
 `ActionFailureInfo` contains:
 

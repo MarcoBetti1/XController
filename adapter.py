@@ -7,6 +7,7 @@ import re
 import time
 import contextlib
 import hashlib
+import warnings
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
@@ -1188,26 +1189,29 @@ class XTextAdapter(SocialPlatformAdapter):
             return await self._looks_like_home_timeline()
         return False
 
-    async def recover_home(self, force_nav: bool = False) -> bool:
-        return await self._return_home(force_nav=force_nav)
+    async def _reload_current_page(self) -> None:
+        if not self.page:
+            return
+        if self._sync_mode:
+            await self._run_sync(self._sync_page.reload, wait_until="domcontentloaded")
+        else:
+            await self.page.reload(wait_until="domcontentloaded")
+        await self.human.jitter(260, 780)
+        await self._wait_network_idle(1300)
 
-    async def refresh_home(self, force_nav: bool = False) -> bool:
+    async def return_home(self, force_refresh: bool = False) -> bool:
         if not self.page:
             return False
-        home_ready = await self._return_home(force_nav=force_nav)
-        if not home_ready and not force_nav:
-            home_ready = await self._return_home(force_nav=True)
+        home_ready = await self._return_home(force_nav=force_refresh)
         if not home_ready:
             return False
+        if not force_refresh:
+            return True
         try:
-            if self._sync_mode:
-                await self._run_sync(self._sync_page.reload, wait_until="domcontentloaded")
-            else:
-                await self.page.reload(wait_until="domcontentloaded")
-            await self.human.jitter(260, 780)
-            await self._wait_network_idle(1300)
+            await self._reload_current_page()
         except Exception as exc:
-            logger.warning("refresh_home_reload_failed error=%s", str(exc)[:260])
+            logger.warning("return_home_refresh_failed error=%s", str(exc)[:260])
+            return False
         return await self._looks_like_home_timeline()
 
     async def _find_first(self, selectors: list[str], timeout_ms: int = 0):
@@ -2160,10 +2164,15 @@ class XTextAdapter(SocialPlatformAdapter):
             requested_tab = "for_you"
         warnings: list[str] = []
         force_refreshed = False
-        if not await self.settle_home(requested_tab, force_nav=force_refresh):
+        if force_refresh:
+            if await self.return_home(force_refresh=True):
+                force_refreshed = True
+                if not await self._select_home_tab(requested_tab):
+                    warnings.append("home_tab_select_failed")
+            else:
+                warnings.append("home_settle_failed")
+        elif not await self.settle_home(requested_tab):
             warnings.append("home_settle_failed")
-        elif force_refresh:
-            force_refreshed = True
         if reset_scroll and self.page:
             await self._keyboard_press("Home")
             await self.human.jitter(180, 520)
@@ -2433,9 +2442,6 @@ class XTextAdapter(SocialPlatformAdapter):
             max_scan=max(max_items * 4, 40),
             stagnation_limit=2,
         )
-
-    async def read_unread_notifications(self, limit: int = 20) -> list[ObservedNotificationData]:
-        return await self.read_notifications(limit=limit, unread_only=True)
 
     def _parse_iso_datetime(self, value: str | None) -> datetime | None:
         raw = str(value or "").strip()
@@ -3438,6 +3444,11 @@ class XTextAdapter(SocialPlatformAdapter):
         return result.created_post_id if result.ok else None
 
     async def post_image(self, image_paths: ImagePathInput, text: str = "") -> str | None:
+        warnings.warn(
+            "post_image() is deprecated; use post_text(text, image_paths=...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         image_files = self._normalize_image_paths(image_paths)
         if not image_files:
             raise ValueError("At least one image path is required")
@@ -3638,6 +3649,11 @@ class XTextAdapter(SocialPlatformAdapter):
         image_paths: ImagePathInput,
         text: str = "",
     ) -> str | None:
+        warnings.warn(
+            "quote_post_with_image() is deprecated; use quote_post(..., image_paths=...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         image_files = self._normalize_image_paths(image_paths)
         if not image_files:
             raise ValueError("At least one image path is required")
@@ -3872,14 +3888,6 @@ class XTextAdapter(SocialPlatformAdapter):
         result = await self.reply_to_post_detailed(platform_post_id, text, image_paths=image_paths)
         return result.created_post_id if result.ok else None
 
-    async def comment_post(
-        self,
-        platform_post_id: str,
-        text: str,
-        image_paths: ImagePathInput | None = None,
-    ) -> str | None:
-        return await self._reply_to_post_impl(platform_post_id, text, image_paths=image_paths)
-
     async def reply_to_post(
         self,
         platform_post_id: str,
@@ -3889,6 +3897,11 @@ class XTextAdapter(SocialPlatformAdapter):
         return await self._reply_to_post_impl(platform_post_id, text, image_paths=image_paths)
 
     async def reply_with_image(self, platform_post_id: str, image_paths: ImagePathInput, text: str = "") -> str | None:
+        warnings.warn(
+            "reply_with_image() is deprecated; use reply_to_post(..., image_paths=...) instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         image_files = self._normalize_image_paths(image_paths)
         if not image_files:
             raise ValueError("At least one image path is required")
