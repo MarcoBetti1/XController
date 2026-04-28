@@ -6,6 +6,7 @@ This package exposes one main controller class:
 
 - `XController`
 - `XTextAdapter` (compatibility alias of `XController`)
+- `SyncXController` / `XControllerService` for synchronous callers
 
 Additional exported diagnostics types:
 
@@ -14,6 +15,8 @@ Additional exported diagnostics types:
 - `ActionPreflight`
 - `ActionResult`
 - `ControllerHealth`
+- `LoginState`
+- `MediaCaptureData`
 - `MediaPreflight`
 - `ObservedMediaData`
 - `TimelineReadResult`
@@ -24,14 +27,27 @@ Additional exported diagnostics types:
 - `await start()`: starts a persistent Chromium context
 - `await close()`: closes the browser context and Playwright resources
 - `await is_logged_in() -> bool`
+- `await login_state() -> LoginState`
 - `await open_login_page() -> None`
 - `await current_state() -> dict[str, str]`
   When a soft UI failure was recorded, `current_state()` also includes `last_action_error`.
+
+`login_state()` is passive: it uses XController-owned selector tables and current URL/state detection without forcing home navigation. It returns `logged_in`, `page_state`, `url`, `browser_started`, `active_home_tab`, and `login_required`.
+
+## Synchronous Facade
+
+`SyncXController(profile_path=..., settings=..., proxy=...)` owns an internal event loop thread and exposes synchronous methods for service runtimes that cannot call async controller methods directly. `XControllerService` is an alias.
+
+The facade forwards stable service APIs including lifecycle, login state, current state/surface, health checks, detailed timeline reads, notifications, thread context, search, action preflight, detailed actions, metrics, account stats, debug snapshots, and media capture.
+
+`ControllerSettings(playwright_mode="sync", prefer_sync_playwright=True)` controls Playwright transport inside the browser controller. `SyncXController` controls the caller contract and removes the need for downstream code to own `asyncio.new_event_loop()`, worker threads, or `asyncio.run_coroutine_threadsafe()`.
 
 ## Navigation / Recovery
 
 - `await return_home(force_refresh: bool = False) -> bool`
   Returns to home if possible. When `force_refresh=True`, the controller reloads the home surface after returning.
+- `await settle_after_action(tab: str = "for_you", force_refresh: bool = False, reset_scroll: bool = False) -> bool`
+  Opt-in helper for services that want to settle back to a home tab after an action.
 
 ## Read Operations
 
@@ -46,10 +62,13 @@ Additional exported diagnostics types:
 - `await account_stats(handle: str | None = None) -> AccountStats`
 - `await profile_recent_metrics(username: str, limit: int = 40) -> list[dict[str, int | str]]`
 - `await post_metrics(platform_post_id: str) -> dict[str, int]`
+- `await capture_post_media(platform_post_id, output_dir, frame_count: int = 3) -> list[MediaCaptureData]`
 
 `read_notifications(unread_only=True)` returns unread notifications without a separate alias method.
 
 `read_timeline_detailed(force_refresh=True)` performs a home reload before collecting timeline posts. `reset_scroll=True` only presses Home to read the newest visible DOM items at the top of the feed; it does not reload the UI.
+
+`capture_post_media()` opens the target post, resolves the main article, screenshots image cards and representative video frames into `output_dir`, and returns normalized artifact rows.
 
 `account_stats()` samples public profile-level data: handle, display name, profile URL, followers, following, posts, likes, media, verified state, bio, location, and joined date text. When `handle` is omitted, it uses the authenticated account when detectable and falls back to the current profile surface if needed. Counts are normalized from compact X strings such as `1.2K`, `3.4M`, and `5B`. Unavailable fields remain zero or `None`, and `raw["warnings"]` plus `raw["current_url"]` explain what was missing. Browser transport failures such as `profile_in_use`, `playwright_driver_connection_closed`, and `target_page_or_context_closed` are raised as `RuntimeError`.
 
@@ -82,6 +101,8 @@ Detailed write/action variants:
 - `await follow_user_detailed(username: str) -> ActionResult`
 - `await unfollow_user_detailed(username: str) -> ActionResult`
 - `await delete_post_detailed(platform_post_id: str, kind: str = "post") -> ActionResult`
+
+Detailed action methods report the surface observed after the action in `current_url`, `current_state`, and `active_home_tab`. They do not promise to leave the browser on a single surface across all action types because X composer and confirmation flows differ. Call `settle_after_action(tab="for_you", force_refresh=..., reset_scroll=...)` when a service requires a known home surface before the next read.
 
 Preflight and diagnostics:
 
@@ -152,6 +173,28 @@ Convenience helpers:
 - `.author_limited`: true when X shows an author-controlled post limit on the linked post
 - `.reply_limited`: true when the detected author limit affects replies
 - `.author_limit_notice`: the detected X notice text
+- `.to_dict()`: returns a serializable copy
+
+`MediaCaptureData` contains:
+
+- `kind`
+- `path`
+- `target_post_id`
+- `source_url`
+- `thumbnail_url`
+- `alt_text`
+- `raw`
+- `.to_dict()`: returns a serializable copy
+
+`LoginState` contains:
+
+- `logged_in`
+- `page_state`
+- `url`
+- `browser_started`
+- `active_home_tab`
+- `login_required`
+- `raw`
 - `.to_dict()`: returns a serializable copy
 
 `AccountStats` contains:

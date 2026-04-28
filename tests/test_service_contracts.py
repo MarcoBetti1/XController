@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import AsyncMock
 
 try:
-    from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, MediaPreflight, TimelineReadResult, XTextAdapter
+    from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, LoginState, MediaCaptureData, MediaPreflight, TimelineReadResult, XTextAdapter
 except ModuleNotFoundError as exc:
     if exc.name != "XController":
         raise
@@ -23,7 +23,7 @@ except ModuleNotFoundError as exc:
     module = importlib.util.module_from_spec(spec)
     sys.modules["XController"] = module
     spec.loader.exec_module(module)
-    from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, MediaPreflight, TimelineReadResult, XTextAdapter
+    from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, LoginState, MediaCaptureData, MediaPreflight, TimelineReadResult, XTextAdapter
 
 
 class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
@@ -44,12 +44,16 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         preflight = ActionPreflight(ok=False, action="reply", target_post_id="123", reason="reply_limited")
         timeline = TimelineReadResult(posts=[], requested_tab="for_you", active_tab="following", source_url="", current_state="home", raw_count=0, article_count=0)
         media = MediaPreflight(ok=False, errors=[{"path": "x.bmp", "reason": "unsupported_extension"}])
+        capture = MediaCaptureData(kind="image", path="artifact.png", target_post_id="123", source_url="https://x.com/media")
+        login = LoginState(logged_in=True, page_state="home", url="https://x.com/home", browser_started=True)
         account = AccountStats(handle="example", followers=10, raw={"source": "test"})
 
         self.assertEqual(result.to_dict()["failure_reason"], "reply_limited")
         self.assertEqual(preflight.to_dict()["reason"], "reply_limited")
         self.assertEqual(timeline.to_dict()["active_tab"], "following")
         self.assertEqual(media.to_dict()["errors"][0]["reason"], "unsupported_extension")
+        self.assertEqual(capture.to_dict()["target_post_id"], "123")
+        self.assertTrue(login.to_dict()["logged_in"])
         self.assertEqual(account.to_dict()["followers"], 10)
         self.assertEqual(account.to_dict()["raw"]["source"], "test")
 
@@ -151,6 +155,123 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
 
         adapter.return_home.assert_awaited_once_with(force_refresh=True)
         self.assertTrue(result.force_refreshed)
+
+    async def test_timeline_reset_scroll_presses_home_without_force_refresh(self) -> None:
+        class FakePage:
+            url = "https://x.com/home"
+
+            def locator(self, _selector: str) -> object:
+                return object()
+
+        class NoopHuman:
+            async def jitter(self, *_args, **_kwargs) -> None:
+                return None
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.human = NoopHuman()
+        adapter.settle_home = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        adapter.return_home = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        adapter._keyboard_press = AsyncMock()
+        adapter._active_home_tab = AsyncMock(return_value="for_you")
+        adapter._count_locator = AsyncMock(return_value=0)
+        adapter._collect_posts_from_current_page = AsyncMock(return_value=[])
+        adapter._goto = AsyncMock()
+        adapter._select_home_tab = AsyncMock(return_value=True)
+        adapter._current_state_name = AsyncMock(return_value="home")
+
+        result = await adapter.read_timeline_detailed(limit=1, reset_scroll=True)
+
+        adapter.settle_home.assert_awaited_once_with("for_you")
+        adapter.return_home.assert_not_awaited()
+        adapter._keyboard_press.assert_awaited_once_with("Home")
+        self.assertTrue(result.reset_scroll)
+
+    async def test_settle_after_action_can_refresh_select_tab_and_reset_scroll(self) -> None:
+        class FakePage:
+            url = "https://x.com/status/123"
+
+        class NoopHuman:
+            async def jitter(self, *_args, **_kwargs) -> None:
+                return None
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.human = NoopHuman()
+        adapter.return_home = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        adapter._select_home_tab = AsyncMock(return_value=True)
+        adapter._keyboard_press = AsyncMock()
+
+        settled = await adapter.settle_after_action(tab="For You", force_refresh=True, reset_scroll=True)
+
+        self.assertTrue(settled)
+        adapter.return_home.assert_awaited_once_with(force_refresh=True)
+        adapter._select_home_tab.assert_awaited_once_with("for_you")
+        adapter._keyboard_press.assert_awaited_once_with("Home")
+
+    async def test_login_state_shapes_for_not_started_login_and_logged_in(self) -> None:
+        class FakePage:
+            def __init__(self, url: str) -> None:
+                self.url = url
+
+            def locator(self, _selector: str) -> object:
+                return object()
+
+        adapter = self._adapter()
+
+        not_started = await adapter.login_state()
+        self.assertFalse(not_started.logged_in)
+        self.assertEqual(not_started.page_state, "not_started")
+        self.assertTrue(not_started.login_required)
+
+        adapter.page = FakePage("https://x.com/i/flow/login")  # type: ignore[assignment]
+        adapter.current_state = AsyncMock(return_value={"state": "login", "url": "https://x.com/i/flow/login"})  # type: ignore[method-assign]
+        adapter._any_selector = AsyncMock(side_effect=[True, False])
+        adapter._count_locator = AsyncMock(return_value=0)
+        adapter._active_home_tab = AsyncMock(return_value="")
+
+        login = await adapter.login_state()
+        self.assertFalse(login.logged_in)
+        self.assertEqual(login.page_state, "login")
+        self.assertEqual(login.url, "https://x.com/i/flow/login")
+
+        adapter.current_state = AsyncMock(return_value={"state": "home", "url": "https://x.com/home"})  # type: ignore[method-assign]
+        adapter._any_selector = AsyncMock(side_effect=[False, True])
+        adapter._active_home_tab = AsyncMock(return_value="for_you")
+
+        logged_in = await adapter.login_state()
+        self.assertTrue(logged_in.logged_in)
+        self.assertEqual(logged_in.page_state, "home")
+        self.assertEqual(logged_in.active_home_tab, "for_you")
+
+    async def test_capture_post_media_returns_normalized_captures(self) -> None:
+        class FakePage:
+            url = "https://x.com/example/status/123"
+
+        article = object()
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter._open_post_page = AsyncMock(return_value=True)
+        adapter._resolve_target_article = AsyncMock(return_value=article)
+        capture_path = str((self.tmp_path / "captures" / "123_image_1.png").resolve())
+        adapter._capture_article_media_nodes = AsyncMock(
+            return_value=[
+                MediaCaptureData(
+                    kind="image",
+                    path=capture_path,
+                    target_post_id="123",
+                    source_url="https://pbs.twimg.com/media/example.jpg",
+                    alt_text="example",
+                )
+            ]
+        )
+
+        captures = await adapter.capture_post_media("https://x.com/example/status/123", self.tmp_path / "captures")
+
+        self.assertEqual(len(captures), 1)
+        self.assertEqual(captures[0].to_dict()["kind"], "image")
+        self.assertEqual(captures[0].target_post_id, "123")
+        adapter._capture_article_media_nodes.assert_awaited_once()
 
     def test_removed_alias_methods_are_not_public(self) -> None:
         adapter = self._adapter()

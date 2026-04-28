@@ -27,6 +27,8 @@ from .base import (
     ActionPreflight,
     ActionResult,
     ControllerHealth,
+    LoginState,
+    MediaCaptureData,
     MediaPreflight,
     ObservedMediaData,
     ObservedNotificationData,
@@ -334,6 +336,11 @@ class XTextAdapter(SocialPlatformAdapter):
             "url": str(state.get("url") or ""),
             "active_home_tab": await self._active_home_tab(),
         }
+
+    def sync(self):
+        from .sync import SyncXController
+
+        return SyncXController(adapter=self)
 
     async def _fill_action_context(self, result: ActionResult) -> ActionResult:
         result.current_url = self.page.url if self.page else ""
@@ -1214,6 +1221,26 @@ class XTextAdapter(SocialPlatformAdapter):
             return False
         return await self._looks_like_home_timeline()
 
+    async def settle_after_action(
+        self,
+        tab: str = "for_you",
+        force_refresh: bool = False,
+        reset_scroll: bool = False,
+    ) -> bool:
+        requested_tab = str(tab or "for_you").strip().lower().replace("-", "_").replace(" ", "_")
+        if requested_tab not in {"for_you", "following"}:
+            requested_tab = "for_you"
+        if force_refresh:
+            settled = await self.return_home(force_refresh=True)
+            if settled:
+                settled = await self._select_home_tab(requested_tab)
+        else:
+            settled = await self.settle_home(requested_tab)
+        if settled and reset_scroll and self.page:
+            await self._keyboard_press("Home")
+            await self.human.jitter(180, 520)
+        return settled
+
     async def _find_first(self, selectors: list[str], timeout_ms: int = 0):
         if not self.page:
             raise RuntimeError("Browser context not started")
@@ -1760,6 +1787,96 @@ class XTextAdapter(SocialPlatformAdapter):
                 media.append(ObservedMediaData(kind="video", url=src, thumbnail_url=poster).to_dict())
         return media
 
+    async def _screenshot_locator(self, locator: Any, path: Path) -> bool:
+        try:
+            if self._sync_mode:
+                await self._run_sync(locator.screenshot, path=str(path))
+            else:
+                await locator.screenshot(path=str(path))
+            return True
+        except Exception as exc:
+            logger.warning("media_capture_screenshot_failed path=%s error=%s", path, str(exc)[:220])
+            return False
+
+    async def _play_video_locator(self, locator: Any) -> None:
+        script = """node => {
+            try {
+                node.muted = true;
+                const result = node.play && node.play();
+                if (result && result.catch) result.catch(() => {});
+            } catch (_err) {}
+        }"""
+        with contextlib.suppress(Exception):
+            if self._sync_mode:
+                await self._run_sync(locator.evaluate, script)
+            else:
+                await locator.evaluate(script)
+
+    async def _capture_article_media_nodes(
+        self,
+        article: Any,
+        target_post_id: str,
+        output_dir: Path,
+        frame_count: int = 3,
+    ) -> list[MediaCaptureData]:
+        if not article:
+            return []
+        captures: list[MediaCaptureData] = []
+        seen_sources: set[str] = set()
+
+        with contextlib.suppress(Exception):
+            images = article.locator("img")
+            for idx in range(min(await self._count_locator(images), 24)):
+                image = images.nth(idx)
+                src = (await self._get_attribute(image, "src")) or ""
+                alt = (await self._get_attribute(image, "alt")) or ""
+                if not src or "profile_images" in src or src in seen_sources:
+                    continue
+                seen_sources.add(src)
+                path = output_dir / f"{target_post_id}_image_{idx + 1}.png"
+                ok = await self._screenshot_locator(image, path)
+                captures.append(
+                    MediaCaptureData(
+                        kind="image",
+                        path=str(path) if ok else "",
+                        target_post_id=target_post_id,
+                        source_url=src,
+                        thumbnail_url=src,
+                        alt_text=alt,
+                        raw={"selector": "img", "index": idx, "screenshot_ok": ok},
+                    )
+                )
+
+        max_frames = max(1, min(int(frame_count), 10))
+        with contextlib.suppress(Exception):
+            videos = article.locator("video")
+            for video_idx in range(min(await self._count_locator(videos), 6)):
+                video = videos.nth(video_idx)
+                src = (await self._get_attribute(video, "src")) or ""
+                poster = (await self._get_attribute(video, "poster")) or ""
+                await self._play_video_locator(video)
+                for frame_idx in range(max_frames):
+                    path = output_dir / f"{target_post_id}_video_{video_idx + 1}_frame_{frame_idx + 1}.png"
+                    ok = await self._screenshot_locator(video, path)
+                    captures.append(
+                        MediaCaptureData(
+                            kind="video",
+                            path=str(path) if ok else "",
+                            target_post_id=target_post_id,
+                            source_url=src,
+                            thumbnail_url=poster,
+                            raw={
+                                "selector": "video",
+                                "index": video_idx,
+                                "frame_index": frame_idx,
+                                "screenshot_ok": ok,
+                            },
+                        )
+                    )
+                    if frame_idx < max_frames - 1:
+                        await asyncio.sleep(0.35)
+        return captures
+
     async def _extract_article_status_url(self, article: Any) -> str:
         if not article:
             return ""
@@ -2053,6 +2170,49 @@ class XTextAdapter(SocialPlatformAdapter):
         if self.last_action_error:
             state["last_action_error"] = self.last_action_error.summary
         return state
+
+    async def login_state(self) -> LoginState:
+        if not self.page:
+            return LoginState(
+                logged_in=False,
+                page_state="not_started",
+                url="",
+                browser_started=False,
+                login_required=True,
+                raw={"reason": "page_not_started"},
+            )
+
+        state = await self.current_state()
+        page_state = str(state.get("state") or "unknown")
+        url = str(state.get("url") or self.page.url or "")
+        login_markers_visible = await self._any_selector(ui.LOGIN_SELECTORS)
+        logged_in_selectors_visible = await self._any_selector(ui.LOGGED_IN_SELECTORS)
+        login_link_visible = False
+        with contextlib.suppress(Exception):
+            login_link_visible = bool(await self._count_locator(self.page.locator('a[href="/login"]')))
+
+        login_url = any(token in url for token in ("/login", "/i/flow/"))
+        known_logged_in_surface = page_state in {"home", "search", "status", "profile", "notifications", "compose"}
+        logged_in = bool(
+            logged_in_selectors_visible
+            or (known_logged_in_surface and not login_markers_visible and not login_link_visible and not login_url)
+        )
+        raw: dict[str, Any] = {
+            "login_markers_visible": login_markers_visible,
+            "logged_in_selectors_visible": logged_in_selectors_visible,
+            "login_link_visible": login_link_visible,
+        }
+        if self.last_action_error:
+            raw["last_action_error"] = self.last_action_error.to_dict()
+        return LoginState(
+            logged_in=logged_in,
+            page_state=page_state,
+            url=url,
+            browser_started=True,
+            active_home_tab=await self._active_home_tab(),
+            login_required=not logged_in,
+            raw=raw,
+        )
 
     async def is_logged_in(self) -> bool:
         if not self.page:
@@ -3275,6 +3435,28 @@ class XTextAdapter(SocialPlatformAdapter):
         manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
         return {"manifest_path": str(manifest_path), **manifest}
 
+    async def capture_post_media(
+        self,
+        platform_post_id: str,
+        output_dir: str | os.PathLike[str],
+        frame_count: int = 3,
+    ) -> list[MediaCaptureData]:
+        target_id = self._normalize_post_id(platform_post_id)
+        if not target_id or not self.page:
+            return []
+        out_dir = Path(output_dir).expanduser()
+        if not out_dir.is_absolute():
+            out_dir = (Path.cwd() / out_dir).resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        if not await self._open_post_page(target_id):
+            return []
+        article = await self._resolve_target_article(target_id)
+        if article is None:
+            return []
+        captures = await self._capture_article_media_nodes(article, target_id, out_dir, frame_count=frame_count)
+        return [item for item in captures if item.path]
+
     async def _visible_dialogs(self) -> list[str]:
         if not self.page:
             return []
@@ -3294,16 +3476,15 @@ class XTextAdapter(SocialPlatformAdapter):
 
     async def health_check(self) -> ControllerHealth:
         browser_started = self.page is not None
-        state = await self.current_state() if browser_started else {"state": "not_started", "url": ""}
-        logged_in = bool(browser_started and await self._any_selector(ui.LOGGED_IN_SELECTORS))
+        state = await self.login_state()
         content = (await self._page_content()).lower() if browser_started else ""
         return ControllerHealth(
             browser_started=browser_started,
-            logged_in=logged_in,
-            current_url=str(state.get("url") or ""),
-            current_state=str(state.get("state") or ""),
-            active_home_tab=await self._active_home_tab(),
-            login_required=not logged_in,
+            logged_in=state.logged_in,
+            current_url=state.url,
+            current_state=state.page_state,
+            active_home_tab=state.active_home_tab,
+            login_required=state.login_required,
             account_locked="account is locked" in content or "temporarily restricted" in content,
             rate_limited="rate limit" in content or "try again later" in content,
             blocking_modal_present=bool(await self._visible_dialogs()),
