@@ -331,10 +331,15 @@ class XTextAdapter(SocialPlatformAdapter):
 
     async def current_surface(self) -> dict[str, str]:
         state = await self.current_state()
+        state_name = str(state.get("state") or "")
+        url = str(state.get("url") or "")
+        active_home_tab = await self._active_home_tab()
         return {
-            "state": str(state.get("state") or ""),
-            "url": str(state.get("url") or ""),
-            "active_home_tab": await self._active_home_tab(),
+            "state": state_name,
+            "current_state": state_name,
+            "url": url,
+            "active_home_tab": active_home_tab,
+            "active_tab": active_home_tab,
         }
 
     def sync(self):

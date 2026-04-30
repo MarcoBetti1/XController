@@ -129,6 +129,41 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(await adapter.return_home())
 
+    async def test_status_page_sidebar_home_link_does_not_count_as_home(self) -> None:
+        class FakeLocator:
+            @property
+            def first(self) -> "FakeLocator":
+                return self
+
+        class FakePage:
+            url = "https://x.com/i/web/status/123"
+
+            def locator(self, _selector: str) -> FakeLocator:
+                return FakeLocator()
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+
+        async def fake_any_selector(selectors: list[str]) -> bool:
+            return 'a[href="/home"]' in selectors or 'a[data-testid="AppTabBar_Home_Link"]' in selectors
+
+        adapter._any_selector = AsyncMock(side_effect=fake_any_selector)
+        adapter._count_locator = AsyncMock(return_value=0)
+
+        self.assertFalse(await adapter._looks_like_home_timeline())
+
+    async def test_current_surface_includes_legacy_and_explicit_state_keys(self) -> None:
+        adapter = self._adapter()
+        adapter.current_state = AsyncMock(return_value={"state": "status", "url": "https://x.com/i/web/status/123"})  # type: ignore[method-assign]
+        adapter._active_home_tab = AsyncMock(return_value="")
+
+        surface = await adapter.current_surface()
+
+        self.assertEqual(surface["state"], "status")
+        self.assertEqual(surface["current_state"], "status")
+        self.assertEqual(surface["url"], "https://x.com/i/web/status/123")
+        self.assertEqual(surface["active_tab"], "")
+
     async def test_timeline_force_refresh_uses_return_home_reload_path(self) -> None:
         class FakePage:
             url = "https://x.com/home"
