@@ -1883,17 +1883,36 @@ class XTextAdapter(SocialPlatformAdapter):
         return captures
 
     async def _extract_article_status_url(self, article: Any) -> str:
+        urls = await self._extract_article_status_urls(article)
+        return urls[0] if urls else ""
+
+    async def _extract_article_status_urls(self, article: Any) -> list[str]:
         if not article:
-            return ""
-        link = article.locator('a[href*="/status/"]').first
-        if not await self._count_locator(link):
-            return ""
-        href = (await self._get_attribute(link, "href")) or ""
-        if href.startswith("http"):
-            return href
-        if href.startswith("/"):
-            return f"{self.BASE_URL}{href}"
-        return href
+            return []
+        links = article.locator('a[href*="/status/"]')
+        total = await self._count_locator(links)
+        if not total:
+            return []
+        urls: list[str] = []
+        for idx in range(min(total, 20)):
+            href = (await self._get_attribute(links.nth(idx), "href")) or ""
+            if href.startswith("http"):
+                url = href
+            elif href.startswith("/"):
+                url = f"{self.BASE_URL}{href}"
+            else:
+                url = href
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _extract_status_ids_from_urls(self, urls: Sequence[str]) -> list[str]:
+        post_ids: list[str] = []
+        for url in urls:
+            post_id = self._extract_post_id(str(url or ""))
+            if post_id and post_id not in post_ids:
+                post_ids.append(post_id)
+        return post_ids
 
     async def _extract_article_social_context(self, article: Any) -> str:
         if not article:
@@ -2499,8 +2518,11 @@ class XTextAdapter(SocialPlatformAdapter):
         if not article:
             return None
 
-        url = await self._extract_article_status_url(article)
+        status_urls = await self._extract_article_status_urls(article)
+        url = status_urls[0] if status_urls else ""
         post_id = self._extract_post_id(url)
+        status_post_ids = self._extract_status_ids_from_urls(status_urls)
+        related_post_ids = [item for item in status_post_ids if item != post_id]
         text = (await self._extract_article_text(article))[:4000]
         body = text
         with contextlib.suppress(Exception):
@@ -2527,6 +2549,9 @@ class XTextAdapter(SocialPlatformAdapter):
                 "post_id": post_id,
                 "platform_post_id": post_id,
                 "url": url,
+                "status_urls": status_urls,
+                "status_post_ids": status_post_ids,
+                "related_post_ids": related_post_ids,
                 "actor_handle": actor,
                 "actor_display_name": actor_display_name,
                 "created_at": created_at.isoformat() if created_at else None,

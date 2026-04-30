@@ -87,6 +87,7 @@ class FakeArticle(FakeNode):
         notification_type_text: str,
         unread: bool = False,
         created_at: str = "2026-04-21T15:00:00Z",
+        status_links: list[str] | None = None,
     ):
         super().__init__(text=body, attrs={"aria-label": "Unread notification" if unread else ""})
         self.actor = actor
@@ -95,10 +96,12 @@ class FakeArticle(FakeNode):
         self.notification_type_text = notification_type_text
         self.unread = unread
         self.created_at = created_at
+        self.status_links = status_links
 
     def locator(self, selector: str) -> FakeLocator:
         if selector == 'a[href*="/status/"]':
-            return FakeLocator([FakeNode(attrs={"href": f"/{self.actor}/status/{self.post_id}"})])
+            status_links = self.status_links or [f"/{self.actor}/status/{self.post_id}"]
+            return FakeLocator([FakeNode(attrs={"href": href}) for href in status_links])
         if selector == 'a[href^="/"]':
             return FakeLocator(
                 [
@@ -209,6 +212,38 @@ class NotificationReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notifications[0].platform_post_id, "102")
         self.assertTrue(notifications[0].unread)
         self.assertEqual(notifications[0].notification_type, "mention")
+
+    async def test_notification_raw_includes_related_status_ids(self) -> None:
+        self.adapter.page = FakePage(
+            [
+                FakeArticle(
+                    actor="bob",
+                    post_id="202",
+                    tweet_text="Reply post",
+                    body="Bob replied to your post\nReply post",
+                    notification_type_text="Bob replied to your post",
+                    status_links=[
+                        "/bob/status/202",
+                        "/PixelGamingCo/status/101",
+                        "https://x.com/bob/status/202",
+                    ],
+                ),
+            ]
+        )
+
+        notifications = await self.adapter.read_notifications(limit=1)
+
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0].platform_post_id, "202")
+        self.assertEqual(notifications[0].raw["status_post_ids"], ["202", "101"])
+        self.assertEqual(notifications[0].raw["related_post_ids"], ["101"])
+        self.assertEqual(
+            notifications[0].raw["status_urls"],
+            [
+                "https://x.com/bob/status/202",
+                "https://x.com/PixelGamingCo/status/101",
+            ],
+        )
 
 
 class PostRestrictionTests(unittest.IsolatedAsyncioTestCase):
