@@ -1953,9 +1953,11 @@ class XTextAdapter(SocialPlatformAdapter):
             "reply_limit_blocked": bool(reply_blocked_notice),
         }
 
-    async def _article_has_reply_context(self, article: Any) -> bool:
+    async def _article_has_reply_context(self, article: Any, body: str = "") -> bool:
         if not article:
             return False
+        if "replying to" in str(body or "").lower():
+            return True
         reply_markers = [
             'span:has-text("Replying to")',
             'div:has-text("Replying to")',
@@ -1966,11 +1968,15 @@ class XTextAdapter(SocialPlatformAdapter):
                 marker = article.locator(selector).first
                 if await self._count_locator(marker):
                     return True
-        with contextlib.suppress(Exception):
-            status_links = article.locator('a[href*="/status/"]')
-            if await self._count_locator(status_links) >= 2:
-                return True
         return False
+
+    async def _article_has_quote_context(self, article: Any, body: str = "") -> bool:
+        if not article:
+            return False
+        if await self._article_has_reply_context(article, body=body):
+            return False
+        urls = await self._extract_article_status_urls(article)
+        return len(self._extract_status_ids_from_urls(urls)) >= 2
 
     async def _classify_profile_article(self, article: Any, own_handle: str) -> dict[str, Any]:
         url = await self._extract_article_status_url(article)
@@ -1986,8 +1992,10 @@ class XTextAdapter(SocialPlatformAdapter):
         social_lower = social_context.lower()
         body_lower = body.lower()
         is_repost = bool("reposted" in social_lower and author_lower != own_handle_lower)
-        reply_context = await self._article_has_reply_context(article)
+        reply_context = await self._article_has_reply_context(article, body=body)
+        quote_context = await self._article_has_quote_context(article, body=body)
         is_reply = bool(author_lower == own_handle_lower and ("replying to" in body_lower or reply_context))
+        is_quote = bool(author_lower == own_handle_lower and not is_repost and not is_reply and quote_context)
         limit_state = self._extract_article_author_limit_state(body, social_context)
         return {
             "post_id": post_id,
@@ -1997,6 +2005,7 @@ class XTextAdapter(SocialPlatformAdapter):
             "social_context": social_context,
             "is_reply": is_reply,
             "is_repost": is_repost,
+            "is_quote": is_quote,
             **limit_state,
         }
 
@@ -2009,7 +2018,15 @@ class XTextAdapter(SocialPlatformAdapter):
             return False
         if kind == "reply":
             return bool(item.get("is_reply"))
-        return not bool(item.get("is_reply")) and not bool(item.get("is_repost"))
+        if kind == "quote":
+            return bool(item.get("is_quote"))
+        if kind == "post":
+            return (
+                not bool(item.get("is_reply"))
+                and not bool(item.get("is_repost"))
+                and not bool(item.get("is_quote"))
+            )
+        return False
 
     def _profile_surface_url(self, own_handle: str, kind: str) -> str:
         handle = self._normalize_username(own_handle)
@@ -2064,6 +2081,42 @@ class XTextAdapter(SocialPlatformAdapter):
                 await self._random_scroll(random.randint(380, 1160))
                 await self.human.jitter(220, 620)
         return None
+
+    async def _find_owned_status_article_by_post_id(
+        self,
+        own_handle: str,
+        post_id: str,
+        kind: str,
+    ) -> tuple[Any, dict[str, Any]] | None:
+        if not self.page:
+            return None
+        try:
+            await self._goto(f"{self.BASE_URL}/i/web/status/{post_id}")
+        except Exception as exc:
+            logger.warning("open_direct_delete_status_failed target=%s error=%s", post_id, str(exc)[:260])
+            return None
+        article = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if article is None:
+            return None
+        item = await self._classify_profile_article(article, own_handle)
+        if str(item.get("post_id") or "") != post_id:
+            urls = await self._extract_article_status_urls(article)
+            if post_id not in self._extract_status_ids_from_urls(urls):
+                return None
+            item["post_id"] = post_id
+            item["url"] = f"{self.BASE_URL}/i/web/status/{post_id}"
+        if not self._profile_item_matches_kind(item, kind, own_handle):
+            logger.warning(
+                "direct_delete_status_kind_mismatch target=%s kind=%s author=%s is_reply=%s is_repost=%s is_quote=%s",
+                post_id,
+                kind,
+                item.get("author") or "",
+                bool(item.get("is_reply")),
+                bool(item.get("is_repost")),
+                bool(item.get("is_quote")),
+            )
+            return None
+        return article, item
 
     async def _wait_for_profile_article_disappearance(
         self,
@@ -4162,7 +4215,12 @@ class XTextAdapter(SocialPlatformAdapter):
         if expected_kind == "reply" and not bool(item.get("is_reply")):
             logger.warning("delete_reply_target_not_reply target=%s", post_id)
             return False
-        if expected_kind == "post" and (bool(item.get("is_reply")) or bool(item.get("is_repost"))):
+        if expected_kind == "quote" and not bool(item.get("is_quote")):
+            logger.warning("delete_quote_target_not_quote target=%s", post_id)
+            return False
+        if expected_kind == "post" and (
+            bool(item.get("is_reply")) or bool(item.get("is_repost")) or bool(item.get("is_quote"))
+        ):
             logger.warning("delete_post_target_not_plain_post target=%s", post_id)
             return False
         if not await self._open_article_menu(article):
@@ -4193,6 +4251,12 @@ class XTextAdapter(SocialPlatformAdapter):
         if not own_handle:
             logger.warning("delete_owned_item_missing_authenticated_handle target=%s", post_id)
             return False
+        direct = await self._find_owned_status_article_by_post_id(own_handle, post_id, expected_kind)
+        if direct is not None:
+            article, item = direct
+            if await self._delete_owned_article(article, item, expected_kind, own_handle):
+                return True
+            logger.warning("direct_delete_status_failed target=%s kind=%s", post_id, expected_kind)
         article = await self._find_profile_article_by_post_id(own_handle, post_id, expected_kind)
         if article is None:
             logger.warning(
@@ -4239,6 +4303,13 @@ class XTextAdapter(SocialPlatformAdapter):
         if not own_handle:
             logger.warning("undo_repost_missing_authenticated_handle target=%s", post_id)
             return False
+        direct = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if direct is None:
+            with contextlib.suppress(Exception):
+                if await self._open_post_page(post_id):
+                    direct = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if direct is not None and await self._undo_repost_article(direct, post_id):
+            return True
         article = await self._find_profile_article_by_post_id(own_handle, post_id, "repost")
         if article is None:
             logger.warning("undo_repost_article_not_found target=%s handle=%s", post_id, own_handle)
@@ -4293,12 +4364,10 @@ class XTextAdapter(SocialPlatformAdapter):
                 if not post_id:
                     continue
                 attempted_ids.add(post_id)
-                if kind == "reply":
-                    ok = await self._delete_owned_article(article, item, "reply", own_handle)
-                elif kind == "repost":
+                if kind == "repost":
                     ok = await self._undo_repost_article(article, post_id)
                 else:
-                    ok = await self._delete_owned_article(article, item, "post", own_handle)
+                    ok = await self._delete_owned_article(article, item, kind, own_handle)
                 if ok:
                     deleted_urls.append(str(item.get("url") or f"{self.BASE_URL}/i/web/status/{post_id}"))
                     progress = True
@@ -4356,6 +4425,22 @@ class XTextAdapter(SocialPlatformAdapter):
             with contextlib.suppress(Exception):
                 await self._return_home()
 
+    async def delete_quote(self, platform_post_id: str) -> bool:
+        if not self.page:
+            return False
+        try:
+            return await self._delete_owned_status_item(platform_post_id, expected_kind="quote")
+        except Exception as exc:
+            if self._is_driver_connection_closed(exc):
+                raise RuntimeError("playwright_driver_connection_closed") from exc
+            if self._is_target_closed_error(exc):
+                raise RuntimeError("target_page_or_context_closed") from exc
+            logger.warning("delete_quote_failed target=%s error=%s", platform_post_id, str(exc)[:260])
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await self._return_home()
+
     async def delete_all_posts(self) -> list[str]:
         return await self._delete_all_profile_items("post")
 
@@ -4365,9 +4450,13 @@ class XTextAdapter(SocialPlatformAdapter):
     async def delete_all_reposts(self) -> list[str]:
         return await self._delete_all_profile_items("repost")
 
+    async def delete_all_quotes(self) -> list[str]:
+        return await self._delete_all_profile_items("quote")
+
     async def delete_all_content(self) -> dict[str, list[str]]:
         return {
             "reposts": await self.delete_all_reposts(),
+            "quotes": await self.delete_all_quotes(),
             "replies": await self.delete_all_replies(),
             "posts": await self.delete_all_posts(),
         }
@@ -4380,6 +4469,8 @@ class XTextAdapter(SocialPlatformAdapter):
             ok = await self.delete_reply(post_id)
         elif kind == "repost":
             ok = await self.delete_repost(post_id)
+        elif kind == "quote":
+            ok = await self.delete_quote(post_id)
         else:
             ok = await self.delete_post(post_id)
         return await self._action_result(
