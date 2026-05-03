@@ -3585,21 +3585,44 @@ class XTextAdapter(SocialPlatformAdapter):
         target_id = self._normalize_post_id(post_id)
         if not target_id or not await self._open_post_page(target_id) or not self.page:
             return []
-        articles = self.page.locator("article")
-        total = await self._count_locator(articles)
+        for _ in range(3):
+            articles_probe = self.page.locator("article")
+            if await self._count_locator(articles_probe):
+                break
+            with contextlib.suppress(Exception):
+                await self.page.wait_for_selector("article", timeout=1800)
+            await self.human.jitter(250, 650)
+        summaries: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        target_seen = False
+        max_rows = max(1, int(limit)) * 4
+        for scan_attempt in range(4):
+            articles = self.page.locator("article")
+            total = await self._count_locator(articles)
+            for idx in range(min(total, max_rows)):
+                article = articles.nth(idx)
+                summary = await self._article_summary(article, target_post_id=target_id, thread_index=idx)
+                item_id = str(summary.get("post_id") or "")
+                if not item_id or item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                summaries.append(summary)
+                if item_id == target_id:
+                    target_seen = True
+            if target_seen or scan_attempt >= 3:
+                break
+            await self._random_scroll(850)
+            await self.human.jitter(220, 620)
+            await self._wait_network_idle(900)
         rows: list[ObservedPostData] = []
-        for idx in range(min(total, max(1, int(limit)) * 3)):
-            article = articles.nth(idx)
-            summary = await self._article_summary(article, target_post_id=target_id, thread_index=idx)
+        for summary in summaries:
             item_id = str(summary.get("post_id") or "")
             if not item_id:
                 continue
             is_target = item_id == target_id
             if is_target and not include_target:
                 continue
-            if not is_target and idx == 0 and not include_parent:
-                continue
-            if not is_target and idx > 0 and not include_replies:
+            if not is_target and not (include_parent or include_replies):
                 continue
             rows.append(
                 ObservedPostData(
@@ -3609,8 +3632,14 @@ class XTextAdapter(SocialPlatformAdapter):
                     raw={**summary, "conversation_id": target_id},
                 )
             )
-            if len(rows) >= max(1, int(limit)):
-                break
+        max_limit = max(1, int(limit))
+        if len(rows) > max_limit:
+            target_index = next((idx for idx, row in enumerate(rows) if row.platform_post_id == target_id), -1)
+            if target_index >= 0:
+                start = max(0, target_index - max_limit + 1)
+                rows = rows[start : target_index + 1]
+            else:
+                rows = rows[-max_limit:]
         return rows
 
     async def _open_compose_box(self):
