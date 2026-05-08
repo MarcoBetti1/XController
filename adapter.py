@@ -2915,13 +2915,62 @@ class XTextAdapter(SocialPlatformAdapter):
         metrics["reposts"] = self._extract_metric_token(raw, r"([\d.,]+[kmb]?)\s+(?:reposts?|retweets?)\b")
         return metrics
 
+    def _article_metric_region(self, body: str, article_text: str) -> str:
+        raw_body = str(body or "")
+        raw_text = str(article_text or "").strip()
+        if not raw_body:
+            return ""
+        if not raw_text:
+            return raw_body[-800:]
+
+        body_lines = [line.strip() for line in raw_body.splitlines()]
+        text_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if not text_lines:
+            return raw_body[-800:]
+        lowered_text = [line.lower() for line in text_lines]
+        lowered_body = [line.lower() for line in body_lines]
+        window = len(lowered_text)
+        for idx in range(0, max(0, len(lowered_body) - window + 1)):
+            if lowered_body[idx : idx + window] == lowered_text:
+                return "\n".join(body_lines[idx + window :])
+        if len(raw_text) >= 12 and raw_text in raw_body:
+            return raw_body.split(raw_text, 1)[1]
+        return ""
+
+    def _extract_metrics_from_article_region(self, region: str) -> dict[str, int]:
+        metrics = self._extract_metrics_from_text(region)
+        lines = [line.strip() for line in str(region or "").splitlines() if line.strip()]
+        numeric_values: list[int] = []
+        for line in lines:
+            if re.fullmatch(r"\d+\s?[smhd]", line):
+                continue
+            if re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?", line):
+                value = self._parse_count_token(line)
+                if 0 <= value < 5_000_000_000:
+                    numeric_values.append(value)
+        if len(numeric_values) >= 4:
+            replies, reposts, likes, views = numeric_values[-4:]
+            metrics["replies"] = max(metrics["replies"], replies)
+            metrics["comments"] = metrics["replies"]
+            metrics["reposts"] = max(metrics["reposts"], reposts)
+            metrics["likes"] = max(metrics["likes"], likes)
+            metrics["views"] = max(metrics["views"], views)
+        elif len(numeric_values) == 3:
+            reposts, likes, views = numeric_values[-3:]
+            metrics["reposts"] = max(metrics["reposts"], reposts)
+            metrics["likes"] = max(metrics["likes"], likes)
+            metrics["views"] = max(metrics["views"], views)
+        return metrics
+
     async def _extract_article_metrics(self, article: Any) -> dict[str, int]:
         metrics = self._zero_metrics()
         if not article:
             return metrics
         try:
             body = await self._inner_text(article)
-            parsed = self._extract_metrics_from_text(body)
+            article_text = await self._extract_article_text(article)
+            metric_region = self._article_metric_region(body, article_text)
+            parsed = self._extract_metrics_from_article_region(metric_region)
             for key in metrics:
                 metrics[key] = max(metrics[key], int(parsed.get(key) or 0))
         except Exception:
@@ -2929,24 +2978,27 @@ class XTextAdapter(SocialPlatformAdapter):
 
         # Pull aria-label text from known metric buttons as a fallback.
         selector_map = {
-            "replies": '[data-testid="reply"]',
-            "reposts": '[data-testid="retweet"]',
-            "likes": '[data-testid="like"], [data-testid="unlike"]',
-            "views": '[data-testid="app-text-transition-container"]',
+            "replies": 'button[data-testid="reply"], [data-testid="reply"]',
+            "reposts": 'button[data-testid="retweet"], button[data-testid="unretweet"], [data-testid="retweet"], [data-testid="unretweet"]',
+            "likes": 'button[data-testid="like"], button[data-testid="unlike"], [data-testid="like"], [data-testid="unlike"]',
+            "views": 'a[href$="/analytics"], a[aria-label*="View post analytics"], a[aria-label*="Views"], [aria-label*="Views"]',
         }
         for key, selector in selector_map.items():
             try:
-                locator = article.locator(selector).first
-                if not await self._count_locator(locator):
+                locators = article.locator(selector)
+                total = await self._count_locator(locators)
+                if not total:
                     continue
-                aria = (await self._get_attribute(locator, "aria-label")) or ""
-                if not aria:
-                    aria = await self._inner_text(locator)
-                if not aria:
-                    continue
-                token = self._extract_metric_token(aria, r"([\d.,]+[kmb]?)")
-                if token > 0:
-                    metrics[key] = max(metrics[key], token)
+                for idx in range(min(total, 12)):
+                    locator = locators.nth(idx)
+                    aria = (await self._get_attribute(locator, "aria-label")) or ""
+                    if not aria:
+                        aria = await self._inner_text(locator)
+                    if not aria:
+                        continue
+                    token = self._extract_metric_token(aria, r"([\d.,]+[kmb]?)")
+                    if token > 0:
+                        metrics[key] = max(metrics[key], token)
             except Exception:
                 continue
         metrics["comments"] = metrics["replies"]
@@ -4641,13 +4693,6 @@ class XTextAdapter(SocialPlatformAdapter):
                 article_metrics = await self._extract_article_metrics(article)
                 for key in metrics:
                     metrics[key] = max(int(metrics.get(key) or 0), int(article_metrics.get(key) or 0))
-            content = await self._page_content()
-            content_metrics = self._extract_metrics_from_text(content)
-            metrics["views"] = max(metrics["views"], int(content_metrics.get("views") or 0))
-            metrics["likes"] = max(metrics["likes"], int(content_metrics.get("likes") or 0))
-            metrics["replies"] = max(metrics["replies"], int(content_metrics.get("replies") or 0))
-            metrics["comments"] = metrics["replies"]
-            metrics["reposts"] = max(metrics["reposts"], int(content_metrics.get("reposts") or 0))
         except Exception as exc:
             logger.warning("post_metrics_parse_failed target=%s error=%s", platform_post_id, str(exc)[:260])
         return metrics
