@@ -87,6 +87,7 @@ class FakeArticle(FakeNode):
         notification_type_text: str,
         unread: bool = False,
         created_at: str = "2026-04-21T15:00:00Z",
+        status_links: list[str] | None = None,
     ):
         super().__init__(text=body, attrs={"aria-label": "Unread notification" if unread else ""})
         self.actor = actor
@@ -95,10 +96,12 @@ class FakeArticle(FakeNode):
         self.notification_type_text = notification_type_text
         self.unread = unread
         self.created_at = created_at
+        self.status_links = status_links
 
     def locator(self, selector: str) -> FakeLocator:
         if selector == 'a[href*="/status/"]':
-            return FakeLocator([FakeNode(attrs={"href": f"/{self.actor}/status/{self.post_id}"})])
+            status_links = self.status_links or [f"/{self.actor}/status/{self.post_id}"]
+            return FakeLocator([FakeNode(attrs={"href": href}) for href in status_links])
         if selector == 'a[href^="/"]':
             return FakeLocator(
                 [
@@ -210,6 +213,38 @@ class NotificationReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(notifications[0].unread)
         self.assertEqual(notifications[0].notification_type, "mention")
 
+    async def test_notification_raw_includes_related_status_ids(self) -> None:
+        self.adapter.page = FakePage(
+            [
+                FakeArticle(
+                    actor="bob",
+                    post_id="202",
+                    tweet_text="Reply post",
+                    body="Bob replied to your post\nReply post",
+                    notification_type_text="Bob replied to your post",
+                    status_links=[
+                        "/bob/status/202",
+                        "/PixelGamingCo/status/101",
+                        "https://x.com/bob/status/202",
+                    ],
+                ),
+            ]
+        )
+
+        notifications = await self.adapter.read_notifications(limit=1)
+
+        self.assertEqual(len(notifications), 1)
+        self.assertEqual(notifications[0].platform_post_id, "202")
+        self.assertEqual(notifications[0].raw["status_post_ids"], ["202", "101"])
+        self.assertEqual(notifications[0].raw["related_post_ids"], ["101"])
+        self.assertEqual(
+            notifications[0].raw["status_urls"],
+            [
+                "https://x.com/bob/status/202",
+                "https://x.com/PixelGamingCo/status/101",
+            ],
+        )
+
 
 class PostRestrictionTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
@@ -243,6 +278,133 @@ class PostRestrictionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(posts[0].reply_limited)
         self.assertEqual(posts[0].author_limit_notice, "Only some accounts can reply.")
         self.assertEqual(posts[0].raw["author_limit_type"], "reply")
+
+    async def test_article_metrics_ignore_metric_words_in_post_text(self) -> None:
+        article = FakeArticle(
+            actor="AnantapurBO",
+            post_id="2051882249730347307",
+            tweet_text=(
+                "110M views\n"
+                "6.4M likes\n\n"
+                "@hegdepooja's Highest liked post on @instagram ? #TVKVijay #TVKVijayHQ #TVK"
+            ),
+            body=(
+                "ATPBO\n"
+                "@AnantapurBO\n"
+                "·\n"
+                "9h\n"
+                "110M views\n"
+                "6.4M likes\n\n"
+                "@hegdepooja's Highest liked post on @instagram ? #TVKVijay #TVKVijayHQ #TVK\n"
+                "4\n"
+                "30\n"
+                "91\n"
+                "1.5K"
+            ),
+            notification_type_text="",
+        )
+
+        metrics = await self.adapter._extract_article_metrics(article)
+
+        self.assertEqual(metrics["replies"], 4)
+        self.assertEqual(metrics["comments"], 4)
+        self.assertEqual(metrics["reposts"], 30)
+        self.assertEqual(metrics["likes"], 91)
+        self.assertEqual(metrics["views"], 1500)
+
+    async def test_article_metrics_use_footer_order_for_unlabeled_counts(self) -> None:
+        article = FakeArticle(
+            actor="drpezeshkian",
+            post_id="2051681840218710032",
+            tweet_text=(
+                "If politics is reduced to power, the result is today's world: chaos, oppression, injustice, and piracy\n\n"
+                "In our national ethos and religious worldview, power without ethics is hollow. Today، Iran represents "
+                "ethical, responsible power; its enemies embody reckless & unchecked force."
+            ),
+            body=(
+                "Masoud Pezeshkian\n"
+                "@drpezeshkian\n"
+                "·\n"
+                "May 5\n"
+                "If politics is reduced to power, the result is today's world: chaos, oppression, injustice, and piracy\n\n"
+                "In our national ethos and religious worldview, power without ethics is hollow. Today، Iran represents "
+                "ethical, responsible power; its enemies embody reckless & unchecked force.\n"
+                "999\n"
+                "3.2K\n"
+                "13K\n"
+                "401K"
+            ),
+            notification_type_text="",
+        )
+
+        metrics = await self.adapter._extract_article_metrics(article)
+
+        self.assertEqual(metrics["replies"], 999)
+        self.assertEqual(metrics["comments"], 999)
+        self.assertEqual(metrics["reposts"], 3200)
+        self.assertEqual(metrics["likes"], 13000)
+        self.assertEqual(metrics["views"], 401000)
+
+    async def test_article_metrics_ignore_status_ids_before_three_number_footer(self) -> None:
+        article = FakeArticle(
+            actor="45johnmac",
+            post_id="2050495751692632555",
+            tweet_text="America has deadly preservatives and carcinogenic ingredients in food.",
+            body=(
+                "Gordon Master\n"
+                "@45johnmac\n"
+                "America has deadly preservatives and carcinogenic ingredients in food.\n"
+                "Quote\n"
+                "Other User\n"
+                "https://\n"
+                "x.com/i/status/20371\n"
+                "20770434850821\n"
+                "...\n"
+                "16\n"
+                "20\n"
+                "201"
+            ),
+            notification_type_text="",
+        )
+
+        metrics = await self.adapter._extract_article_metrics(article)
+
+        self.assertEqual(metrics["replies"], 0)
+        self.assertEqual(metrics["comments"], 0)
+        self.assertEqual(metrics["reposts"], 16)
+        self.assertEqual(metrics["likes"], 20)
+        self.assertEqual(metrics["views"], 201)
+
+    async def test_article_metrics_ignore_quote_card_timestamps_before_footer(self) -> None:
+        article = FakeArticle(
+            actor="visaraj",
+            post_id="2051988242300563529",
+            tweet_text="Look at the numbers in south. Literally a washout.",
+            body=(
+                "Narayanan\n"
+                "@visaraj\n"
+                "51m\n"
+                "Look at the numbers in south. Literally a washout.\n"
+                "Quote\n"
+                "Sujaya Krishna\n"
+                "@sujayak\n"
+                "58m\n"
+                "Replying to @visaraj\n"
+                "I have seen the numbers. It does not look as bad.\n"
+                "2\n"
+                "9\n"
+                "368"
+            ),
+            notification_type_text="",
+        )
+
+        metrics = await self.adapter._extract_article_metrics(article)
+
+        self.assertEqual(metrics["replies"], 0)
+        self.assertEqual(metrics["comments"], 0)
+        self.assertEqual(metrics["reposts"], 2)
+        self.assertEqual(metrics["likes"], 9)
+        self.assertEqual(metrics["views"], 368)
 
     async def test_notifications_include_author_reply_limit_notice(self) -> None:
         self.adapter.page = FakePage(

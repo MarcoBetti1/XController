@@ -214,6 +214,36 @@ class SyncXController:
     def repost_post_detailed(self, platform_post_id: str) -> ActionResult:
         return self._call(self._adapter.repost_post_detailed(platform_post_id))
 
+    def delete_post(self, platform_post_id: str) -> bool:
+        return self._call(self._adapter.delete_post(platform_post_id))
+
+    def delete_reply(self, platform_post_id: str) -> bool:
+        return self._call(self._adapter.delete_reply(platform_post_id))
+
+    def delete_repost(self, platform_post_id: str) -> bool:
+        return self._call(self._adapter.delete_repost(platform_post_id))
+
+    def delete_quote(self, platform_post_id: str) -> bool:
+        return self._call(self._adapter.delete_quote(platform_post_id))
+
+    def delete_post_detailed(self, platform_post_id: str, kind: str = "post") -> ActionResult:
+        return self._call(self._adapter.delete_post_detailed(platform_post_id, kind=kind))
+
+    def delete_all_posts(self) -> list[str]:
+        return self._call(self._adapter.delete_all_posts())
+
+    def delete_all_replies(self) -> list[str]:
+        return self._call(self._adapter.delete_all_replies())
+
+    def delete_all_reposts(self) -> list[str]:
+        return self._call(self._adapter.delete_all_reposts())
+
+    def delete_all_quotes(self) -> list[str]:
+        return self._call(self._adapter.delete_all_quotes())
+
+    def delete_all_content(self) -> dict[str, list[str]]:
+        return self._call(self._adapter.delete_all_content())
+
     def follow_user_detailed(self, username: str) -> ActionResult:
         return self._call(self._adapter.follow_user_detailed(username))
 

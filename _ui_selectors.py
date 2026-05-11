@@ -52,8 +52,6 @@ LOGIN_SELECTORS = [
 HOME_SELECTORS = [
     'a[data-testid="AppTabBar_Home_Link"][aria-current="page"]',
     'a[href="/home"][aria-current="page"]',
-    'a[data-testid="AppTabBar_Home_Link"]',
-    'a[href="/home"]',
 ]
 
 HOME_ENTRY_SELECTORS = [

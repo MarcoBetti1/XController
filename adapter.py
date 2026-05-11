@@ -331,10 +331,15 @@ class XTextAdapter(SocialPlatformAdapter):
 
     async def current_surface(self) -> dict[str, str]:
         state = await self.current_state()
+        state_name = str(state.get("state") or "")
+        url = str(state.get("url") or "")
+        active_home_tab = await self._active_home_tab()
         return {
-            "state": str(state.get("state") or ""),
-            "url": str(state.get("url") or ""),
-            "active_home_tab": await self._active_home_tab(),
+            "state": state_name,
+            "current_state": state_name,
+            "url": url,
+            "active_home_tab": active_home_tab,
+            "active_tab": active_home_tab,
         }
 
     def sync(self):
@@ -1878,17 +1883,36 @@ class XTextAdapter(SocialPlatformAdapter):
         return captures
 
     async def _extract_article_status_url(self, article: Any) -> str:
+        urls = await self._extract_article_status_urls(article)
+        return urls[0] if urls else ""
+
+    async def _extract_article_status_urls(self, article: Any) -> list[str]:
         if not article:
-            return ""
-        link = article.locator('a[href*="/status/"]').first
-        if not await self._count_locator(link):
-            return ""
-        href = (await self._get_attribute(link, "href")) or ""
-        if href.startswith("http"):
-            return href
-        if href.startswith("/"):
-            return f"{self.BASE_URL}{href}"
-        return href
+            return []
+        links = article.locator('a[href*="/status/"]')
+        total = await self._count_locator(links)
+        if not total:
+            return []
+        urls: list[str] = []
+        for idx in range(min(total, 20)):
+            href = (await self._get_attribute(links.nth(idx), "href")) or ""
+            if href.startswith("http"):
+                url = href
+            elif href.startswith("/"):
+                url = f"{self.BASE_URL}{href}"
+            else:
+                url = href
+            if url and url not in urls:
+                urls.append(url)
+        return urls
+
+    def _extract_status_ids_from_urls(self, urls: Sequence[str]) -> list[str]:
+        post_ids: list[str] = []
+        for url in urls:
+            post_id = self._extract_post_id(str(url or ""))
+            if post_id and post_id not in post_ids:
+                post_ids.append(post_id)
+        return post_ids
 
     async def _extract_article_social_context(self, article: Any) -> str:
         if not article:
@@ -1929,9 +1953,11 @@ class XTextAdapter(SocialPlatformAdapter):
             "reply_limit_blocked": bool(reply_blocked_notice),
         }
 
-    async def _article_has_reply_context(self, article: Any) -> bool:
+    async def _article_has_reply_context(self, article: Any, body: str = "") -> bool:
         if not article:
             return False
+        if "replying to" in str(body or "").lower():
+            return True
         reply_markers = [
             'span:has-text("Replying to")',
             'div:has-text("Replying to")',
@@ -1942,11 +1968,15 @@ class XTextAdapter(SocialPlatformAdapter):
                 marker = article.locator(selector).first
                 if await self._count_locator(marker):
                     return True
-        with contextlib.suppress(Exception):
-            status_links = article.locator('a[href*="/status/"]')
-            if await self._count_locator(status_links) >= 2:
-                return True
         return False
+
+    async def _article_has_quote_context(self, article: Any, body: str = "") -> bool:
+        if not article:
+            return False
+        if await self._article_has_reply_context(article, body=body):
+            return False
+        urls = await self._extract_article_status_urls(article)
+        return len(self._extract_status_ids_from_urls(urls)) >= 2
 
     async def _classify_profile_article(self, article: Any, own_handle: str) -> dict[str, Any]:
         url = await self._extract_article_status_url(article)
@@ -1962,8 +1992,10 @@ class XTextAdapter(SocialPlatformAdapter):
         social_lower = social_context.lower()
         body_lower = body.lower()
         is_repost = bool("reposted" in social_lower and author_lower != own_handle_lower)
-        reply_context = await self._article_has_reply_context(article)
+        reply_context = await self._article_has_reply_context(article, body=body)
+        quote_context = await self._article_has_quote_context(article, body=body)
         is_reply = bool(author_lower == own_handle_lower and ("replying to" in body_lower or reply_context))
+        is_quote = bool(author_lower == own_handle_lower and not is_repost and not is_reply and quote_context)
         limit_state = self._extract_article_author_limit_state(body, social_context)
         return {
             "post_id": post_id,
@@ -1973,6 +2005,7 @@ class XTextAdapter(SocialPlatformAdapter):
             "social_context": social_context,
             "is_reply": is_reply,
             "is_repost": is_repost,
+            "is_quote": is_quote,
             **limit_state,
         }
 
@@ -1985,7 +2018,15 @@ class XTextAdapter(SocialPlatformAdapter):
             return False
         if kind == "reply":
             return bool(item.get("is_reply"))
-        return not bool(item.get("is_reply")) and not bool(item.get("is_repost"))
+        if kind == "quote":
+            return bool(item.get("is_quote"))
+        if kind == "post":
+            return (
+                not bool(item.get("is_reply"))
+                and not bool(item.get("is_repost"))
+                and not bool(item.get("is_quote"))
+            )
+        return False
 
     def _profile_surface_url(self, own_handle: str, kind: str) -> str:
         handle = self._normalize_username(own_handle)
@@ -2040,6 +2081,42 @@ class XTextAdapter(SocialPlatformAdapter):
                 await self._random_scroll(random.randint(380, 1160))
                 await self.human.jitter(220, 620)
         return None
+
+    async def _find_owned_status_article_by_post_id(
+        self,
+        own_handle: str,
+        post_id: str,
+        kind: str,
+    ) -> tuple[Any, dict[str, Any]] | None:
+        if not self.page:
+            return None
+        try:
+            await self._goto(f"{self.BASE_URL}/i/web/status/{post_id}")
+        except Exception as exc:
+            logger.warning("open_direct_delete_status_failed target=%s error=%s", post_id, str(exc)[:260])
+            return None
+        article = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if article is None:
+            return None
+        item = await self._classify_profile_article(article, own_handle)
+        if str(item.get("post_id") or "") != post_id:
+            urls = await self._extract_article_status_urls(article)
+            if post_id not in self._extract_status_ids_from_urls(urls):
+                return None
+            item["post_id"] = post_id
+            item["url"] = f"{self.BASE_URL}/i/web/status/{post_id}"
+        if not self._profile_item_matches_kind(item, kind, own_handle):
+            logger.warning(
+                "direct_delete_status_kind_mismatch target=%s kind=%s author=%s is_reply=%s is_repost=%s is_quote=%s",
+                post_id,
+                kind,
+                item.get("author") or "",
+                bool(item.get("is_reply")),
+                bool(item.get("is_repost")),
+                bool(item.get("is_quote")),
+            )
+            return None
+        return article, item
 
     async def _wait_for_profile_article_disappearance(
         self,
@@ -2494,8 +2571,11 @@ class XTextAdapter(SocialPlatformAdapter):
         if not article:
             return None
 
-        url = await self._extract_article_status_url(article)
+        status_urls = await self._extract_article_status_urls(article)
+        url = status_urls[0] if status_urls else ""
         post_id = self._extract_post_id(url)
+        status_post_ids = self._extract_status_ids_from_urls(status_urls)
+        related_post_ids = [item for item in status_post_ids if item != post_id]
         text = (await self._extract_article_text(article))[:4000]
         body = text
         with contextlib.suppress(Exception):
@@ -2522,6 +2602,9 @@ class XTextAdapter(SocialPlatformAdapter):
                 "post_id": post_id,
                 "platform_post_id": post_id,
                 "url": url,
+                "status_urls": status_urls,
+                "status_post_ids": status_post_ids,
+                "related_post_ids": related_post_ids,
                 "actor_handle": actor,
                 "actor_display_name": actor_display_name,
                 "created_at": created_at.isoformat() if created_at else None,
@@ -2832,13 +2915,62 @@ class XTextAdapter(SocialPlatformAdapter):
         metrics["reposts"] = self._extract_metric_token(raw, r"([\d.,]+[kmb]?)\s+(?:reposts?|retweets?)\b")
         return metrics
 
+    def _article_metric_region(self, body: str, article_text: str) -> str:
+        raw_body = str(body or "")
+        raw_text = str(article_text or "").strip()
+        if not raw_body:
+            return ""
+        if not raw_text:
+            return raw_body[-800:]
+
+        body_lines = [line.strip() for line in raw_body.splitlines()]
+        text_lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+        if not text_lines:
+            return raw_body[-800:]
+        lowered_text = [line.lower() for line in text_lines]
+        lowered_body = [line.lower() for line in body_lines]
+        window = len(lowered_text)
+        for idx in range(0, max(0, len(lowered_body) - window + 1)):
+            if lowered_body[idx : idx + window] == lowered_text:
+                return "\n".join(body_lines[idx + window :])
+        if len(raw_text) >= 12 and raw_text in raw_body:
+            return raw_body.split(raw_text, 1)[1]
+        return ""
+
+    def _extract_metrics_from_article_region(self, region: str) -> dict[str, int]:
+        metrics = self._extract_metrics_from_text(region)
+        lines = [line.strip() for line in str(region or "").splitlines() if line.strip()]
+        numeric_values: list[int] = []
+        for line in lines:
+            if re.fullmatch(r"\d+\s?[smhd]", line):
+                continue
+            if re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?", line):
+                value = self._parse_count_token(line)
+                if 0 <= value < 5_000_000_000:
+                    numeric_values.append(value)
+        if len(numeric_values) >= 4:
+            replies, reposts, likes, views = numeric_values[-4:]
+            metrics["replies"] = max(metrics["replies"], replies)
+            metrics["comments"] = metrics["replies"]
+            metrics["reposts"] = max(metrics["reposts"], reposts)
+            metrics["likes"] = max(metrics["likes"], likes)
+            metrics["views"] = max(metrics["views"], views)
+        elif len(numeric_values) == 3:
+            reposts, likes, views = numeric_values[-3:]
+            metrics["reposts"] = max(metrics["reposts"], reposts)
+            metrics["likes"] = max(metrics["likes"], likes)
+            metrics["views"] = max(metrics["views"], views)
+        return metrics
+
     async def _extract_article_metrics(self, article: Any) -> dict[str, int]:
         metrics = self._zero_metrics()
         if not article:
             return metrics
         try:
             body = await self._inner_text(article)
-            parsed = self._extract_metrics_from_text(body)
+            article_text = await self._extract_article_text(article)
+            metric_region = self._article_metric_region(body, article_text)
+            parsed = self._extract_metrics_from_article_region(metric_region)
             for key in metrics:
                 metrics[key] = max(metrics[key], int(parsed.get(key) or 0))
         except Exception:
@@ -2846,24 +2978,27 @@ class XTextAdapter(SocialPlatformAdapter):
 
         # Pull aria-label text from known metric buttons as a fallback.
         selector_map = {
-            "replies": '[data-testid="reply"]',
-            "reposts": '[data-testid="retweet"]',
-            "likes": '[data-testid="like"], [data-testid="unlike"]',
-            "views": '[data-testid="app-text-transition-container"]',
+            "replies": 'button[data-testid="reply"], [data-testid="reply"]',
+            "reposts": 'button[data-testid="retweet"], button[data-testid="unretweet"], [data-testid="retweet"], [data-testid="unretweet"]',
+            "likes": 'button[data-testid="like"], button[data-testid="unlike"], [data-testid="like"], [data-testid="unlike"]',
+            "views": 'a[href$="/analytics"], a[aria-label*="View post analytics"], a[aria-label*="Views"], [aria-label*="Views"]',
         }
         for key, selector in selector_map.items():
             try:
-                locator = article.locator(selector).first
-                if not await self._count_locator(locator):
+                locators = article.locator(selector)
+                total = await self._count_locator(locators)
+                if not total:
                     continue
-                aria = (await self._get_attribute(locator, "aria-label")) or ""
-                if not aria:
-                    aria = await self._inner_text(locator)
-                if not aria:
-                    continue
-                token = self._extract_metric_token(aria, r"([\d.,]+[kmb]?)")
-                if token > 0:
-                    metrics[key] = max(metrics[key], token)
+                for idx in range(min(total, 12)):
+                    locator = locators.nth(idx)
+                    aria = (await self._get_attribute(locator, "aria-label")) or ""
+                    if not aria:
+                        aria = await self._inner_text(locator)
+                    if not aria:
+                        continue
+                    token = self._extract_metric_token(aria, r"([\d.,]+[kmb]?)")
+                    if token > 0:
+                        metrics[key] = max(metrics[key], token)
             except Exception:
                 continue
         metrics["comments"] = metrics["replies"]
@@ -3502,21 +3637,44 @@ class XTextAdapter(SocialPlatformAdapter):
         target_id = self._normalize_post_id(post_id)
         if not target_id or not await self._open_post_page(target_id) or not self.page:
             return []
-        articles = self.page.locator("article")
-        total = await self._count_locator(articles)
+        for _ in range(3):
+            articles_probe = self.page.locator("article")
+            if await self._count_locator(articles_probe):
+                break
+            with contextlib.suppress(Exception):
+                await self.page.wait_for_selector("article", timeout=1800)
+            await self.human.jitter(250, 650)
+        summaries: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        target_seen = False
+        max_rows = max(1, int(limit)) * 4
+        for scan_attempt in range(4):
+            articles = self.page.locator("article")
+            total = await self._count_locator(articles)
+            for idx in range(min(total, max_rows)):
+                article = articles.nth(idx)
+                summary = await self._article_summary(article, target_post_id=target_id, thread_index=idx)
+                item_id = str(summary.get("post_id") or "")
+                if not item_id or item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                summaries.append(summary)
+                if item_id == target_id:
+                    target_seen = True
+            if target_seen or scan_attempt >= 3:
+                break
+            await self._random_scroll(850)
+            await self.human.jitter(220, 620)
+            await self._wait_network_idle(900)
         rows: list[ObservedPostData] = []
-        for idx in range(min(total, max(1, int(limit)) * 3)):
-            article = articles.nth(idx)
-            summary = await self._article_summary(article, target_post_id=target_id, thread_index=idx)
+        for summary in summaries:
             item_id = str(summary.get("post_id") or "")
             if not item_id:
                 continue
             is_target = item_id == target_id
             if is_target and not include_target:
                 continue
-            if not is_target and idx == 0 and not include_parent:
-                continue
-            if not is_target and idx > 0 and not include_replies:
+            if not is_target and not (include_parent or include_replies):
                 continue
             rows.append(
                 ObservedPostData(
@@ -3526,8 +3684,14 @@ class XTextAdapter(SocialPlatformAdapter):
                     raw={**summary, "conversation_id": target_id},
                 )
             )
-            if len(rows) >= max(1, int(limit)):
-                break
+        max_limit = max(1, int(limit))
+        if len(rows) > max_limit:
+            target_index = next((idx for idx, row in enumerate(rows) if row.platform_post_id == target_id), -1)
+            if target_index >= 0:
+                start = max(0, target_index - max_limit + 1)
+                rows = rows[start : target_index + 1]
+            else:
+                rows = rows[-max_limit:]
         return rows
 
     async def _open_compose_box(self):
@@ -4132,7 +4296,12 @@ class XTextAdapter(SocialPlatformAdapter):
         if expected_kind == "reply" and not bool(item.get("is_reply")):
             logger.warning("delete_reply_target_not_reply target=%s", post_id)
             return False
-        if expected_kind == "post" and (bool(item.get("is_reply")) or bool(item.get("is_repost"))):
+        if expected_kind == "quote" and not bool(item.get("is_quote")):
+            logger.warning("delete_quote_target_not_quote target=%s", post_id)
+            return False
+        if expected_kind == "post" and (
+            bool(item.get("is_reply")) or bool(item.get("is_repost")) or bool(item.get("is_quote"))
+        ):
             logger.warning("delete_post_target_not_plain_post target=%s", post_id)
             return False
         if not await self._open_article_menu(article):
@@ -4163,6 +4332,12 @@ class XTextAdapter(SocialPlatformAdapter):
         if not own_handle:
             logger.warning("delete_owned_item_missing_authenticated_handle target=%s", post_id)
             return False
+        direct = await self._find_owned_status_article_by_post_id(own_handle, post_id, expected_kind)
+        if direct is not None:
+            article, item = direct
+            if await self._delete_owned_article(article, item, expected_kind, own_handle):
+                return True
+            logger.warning("direct_delete_status_failed target=%s kind=%s", post_id, expected_kind)
         article = await self._find_profile_article_by_post_id(own_handle, post_id, expected_kind)
         if article is None:
             logger.warning(
@@ -4209,6 +4384,13 @@ class XTextAdapter(SocialPlatformAdapter):
         if not own_handle:
             logger.warning("undo_repost_missing_authenticated_handle target=%s", post_id)
             return False
+        direct = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if direct is None:
+            with contextlib.suppress(Exception):
+                if await self._open_post_page(post_id):
+                    direct = await self._find_post_article_in_context(post_id, scan_rounds=2)
+        if direct is not None and await self._undo_repost_article(direct, post_id):
+            return True
         article = await self._find_profile_article_by_post_id(own_handle, post_id, "repost")
         if article is None:
             logger.warning("undo_repost_article_not_found target=%s handle=%s", post_id, own_handle)
@@ -4263,12 +4445,10 @@ class XTextAdapter(SocialPlatformAdapter):
                 if not post_id:
                     continue
                 attempted_ids.add(post_id)
-                if kind == "reply":
-                    ok = await self._delete_owned_article(article, item, "reply", own_handle)
-                elif kind == "repost":
+                if kind == "repost":
                     ok = await self._undo_repost_article(article, post_id)
                 else:
-                    ok = await self._delete_owned_article(article, item, "post", own_handle)
+                    ok = await self._delete_owned_article(article, item, kind, own_handle)
                 if ok:
                     deleted_urls.append(str(item.get("url") or f"{self.BASE_URL}/i/web/status/{post_id}"))
                     progress = True
@@ -4326,6 +4506,22 @@ class XTextAdapter(SocialPlatformAdapter):
             with contextlib.suppress(Exception):
                 await self._return_home()
 
+    async def delete_quote(self, platform_post_id: str) -> bool:
+        if not self.page:
+            return False
+        try:
+            return await self._delete_owned_status_item(platform_post_id, expected_kind="quote")
+        except Exception as exc:
+            if self._is_driver_connection_closed(exc):
+                raise RuntimeError("playwright_driver_connection_closed") from exc
+            if self._is_target_closed_error(exc):
+                raise RuntimeError("target_page_or_context_closed") from exc
+            logger.warning("delete_quote_failed target=%s error=%s", platform_post_id, str(exc)[:260])
+            return False
+        finally:
+            with contextlib.suppress(Exception):
+                await self._return_home()
+
     async def delete_all_posts(self) -> list[str]:
         return await self._delete_all_profile_items("post")
 
@@ -4335,9 +4531,13 @@ class XTextAdapter(SocialPlatformAdapter):
     async def delete_all_reposts(self) -> list[str]:
         return await self._delete_all_profile_items("repost")
 
+    async def delete_all_quotes(self) -> list[str]:
+        return await self._delete_all_profile_items("quote")
+
     async def delete_all_content(self) -> dict[str, list[str]]:
         return {
             "reposts": await self.delete_all_reposts(),
+            "quotes": await self.delete_all_quotes(),
             "replies": await self.delete_all_replies(),
             "posts": await self.delete_all_posts(),
         }
@@ -4350,6 +4550,8 @@ class XTextAdapter(SocialPlatformAdapter):
             ok = await self.delete_reply(post_id)
         elif kind == "repost":
             ok = await self.delete_repost(post_id)
+        elif kind == "quote":
+            ok = await self.delete_quote(post_id)
         else:
             ok = await self.delete_post(post_id)
         return await self._action_result(
@@ -4491,13 +4693,6 @@ class XTextAdapter(SocialPlatformAdapter):
                 article_metrics = await self._extract_article_metrics(article)
                 for key in metrics:
                     metrics[key] = max(int(metrics.get(key) or 0), int(article_metrics.get(key) or 0))
-            content = await self._page_content()
-            content_metrics = self._extract_metrics_from_text(content)
-            metrics["views"] = max(metrics["views"], int(content_metrics.get("views") or 0))
-            metrics["likes"] = max(metrics["likes"], int(content_metrics.get("likes") or 0))
-            metrics["replies"] = max(metrics["replies"], int(content_metrics.get("replies") or 0))
-            metrics["comments"] = metrics["replies"]
-            metrics["reposts"] = max(metrics["reposts"], int(content_metrics.get("reposts") or 0))
         except Exception as exc:
             logger.warning("post_metrics_parse_failed target=%s error=%s", platform_post_id, str(exc)[:260])
         return metrics
