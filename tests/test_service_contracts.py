@@ -124,6 +124,51 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(post.ok)
         self.assertEqual(post.action, "post")
 
+    async def test_created_post_id_resolver_matches_recent_owned_text(self) -> None:
+        class FakePage:
+            url = "https://x.com/home"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter._get_authenticated_handle = AsyncMock(return_value="adam_smasha")  # type: ignore[method-assign]
+        adapter._collect_profile_items = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                {"post_id": "123", "text": "unrelated post"},
+                {"post_id": "2054320737582805502", "text": "xbox 360 Netflix Party Mode: actual avatars, fake couch, felt like hanging out"},
+            ]
+        )
+
+        post_id = await adapter._find_recent_own_created_post_id(
+            "post",
+            "xbox 360 Netflix Party Mode: actual avatars, fake couch, felt like hanging out.",
+        )
+
+        self.assertEqual(post_id, "2054320737582805502")
+
+    async def test_created_post_id_resolver_excludes_target_post(self) -> None:
+        class FakePage:
+            url = "https://x.com/i/web/status/123"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter._get_authenticated_handle = AsyncMock(return_value="adam_smasha")  # type: ignore[method-assign]
+        adapter._collect_profile_items = AsyncMock(return_value=[{"post_id": "123", "text": "same text"}])  # type: ignore[method-assign]
+
+        post_id = await adapter._find_recent_own_created_post_id("reply", "same text", target_post_id="123")
+
+        self.assertIsNone(post_id)
+
+    async def test_recent_post_guess_does_not_scan_page_content_by_default(self) -> None:
+        class FakePage:
+            url = "https://x.com/home"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter._page_content = AsyncMock(return_value='href="https://x.com/someone/status/999"')  # type: ignore[method-assign]
+
+        self.assertIsNone(await adapter._guess_recent_post_id())
+        self.assertEqual(await adapter._guess_recent_post_id(allow_page_content=True), "999")
+
     async def test_return_home_is_public_navigation_entrypoint(self) -> None:
         adapter = self._adapter()
 

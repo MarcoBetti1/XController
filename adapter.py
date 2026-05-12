@@ -3752,7 +3752,9 @@ class XTextAdapter(SocialPlatformAdapter):
             logger.warning("post_text_submit_failed_after_retries")
             return None
         await self.human.jitter(900, 1700)
-        post_id = await self._guess_recent_post_id()
+        post_id = await self._find_recent_own_created_post_id("post", text)
+        if not post_id:
+            post_id = await self._guess_recent_post_id()
         if not post_id:
             logger.info("post_text_submitted_unknown_post_id")
         return post_id
@@ -3932,7 +3934,9 @@ class XTextAdapter(SocialPlatformAdapter):
                 logger.warning("quote_submit_failed_after_retries target=%s", post_id)
                 return None
             await self.human.jitter(900, 1700)
-            quote_id = await self._guess_recent_post_id()
+            quote_id = await self._find_recent_own_created_post_id("quote", text, target_post_id=post_id)
+            if not quote_id:
+                quote_id = await self._guess_recent_post_id()
             if quote_id and quote_id != post_id:
                 return quote_id
             return "unknown_quote_id"
@@ -4148,7 +4152,9 @@ class XTextAdapter(SocialPlatformAdapter):
                     )
 
                 await self.human.jitter(700, 1500)
-                reply_id = await self._guess_recent_post_id()
+                reply_id = await self._find_recent_own_created_post_id("reply", text, target_post_id=post_id)
+                if not reply_id:
+                    reply_id = await self._guess_recent_post_id()
                 if reply_id and reply_id != post_id:
                     result = await self._action_result(
                         "reply",
@@ -4754,7 +4760,55 @@ class XTextAdapter(SocialPlatformAdapter):
         found = self.STATUS_URL_RE.search(href or "")
         return found.group(1) if found else ""
 
-    async def _guess_recent_post_id(self) -> str | None:
+    def _compact_created_text(self, value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+    def _created_text_matches(self, expected: str, candidate: str) -> bool:
+        expected_text = self._compact_created_text(expected)
+        candidate_text = self._compact_created_text(candidate)
+        if len(expected_text) < 12 or len(candidate_text) < 12:
+            return False
+        if expected_text in candidate_text or candidate_text in expected_text:
+            return True
+        prefix_len = min(90, len(expected_text), len(candidate_text))
+        return prefix_len >= 28 and expected_text[:prefix_len] == candidate_text[:prefix_len]
+
+    async def _find_recent_own_created_post_id(
+        self,
+        kind: str,
+        text: str,
+        *,
+        target_post_id: str = "",
+    ) -> str | None:
+        if not self.page:
+            return None
+        own_handle = await self._get_authenticated_handle()
+        if not own_handle:
+            return None
+        expected_kind = kind if kind in {"post", "reply", "quote"} else "post"
+        previous_url = self.page.url or ""
+        try:
+            items = await self._collect_profile_items(own_handle, expected_kind, limit=24)
+            for item in items:
+                post_id = str(item.get("post_id") or "")
+                if not post_id or (target_post_id and post_id == target_post_id):
+                    continue
+                if self._created_text_matches(text, str(item.get("text") or "")):
+                    return post_id
+        except Exception as exc:
+            logger.warning(
+                "created_post_id_profile_resolve_failed kind=%s handle=%s error=%s",
+                expected_kind,
+                own_handle,
+                str(exc)[:260],
+            )
+        finally:
+            if previous_url and self.page and (self.page.url or "") != previous_url:
+                with contextlib.suppress(Exception):
+                    await self._goto(previous_url)
+        return None
+
+    async def _guess_recent_post_id(self, *, allow_page_content: bool = False) -> str | None:
         if not self.page:
             return None
         try:
@@ -4762,6 +4816,8 @@ class XTextAdapter(SocialPlatformAdapter):
             match = self.STATUS_URL_RE.search(current or "")
             if match:
                 return match.group(1)
+            if not allow_page_content:
+                return None
             text = await self._page_content()
             found = self.STATUS_URL_RE.search(text)
             return found.group(1) if found else None
