@@ -468,7 +468,12 @@ class SocialPlatformAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    async def profile_recent_metrics(self, username: str, limit: int = 40) -> list[dict[str, int | str]]:
+    async def profile_recent_metrics(
+        self,
+        username: str,
+        limit: int = 40,
+        source: str | None = None,
+    ) -> list[dict[str, int | str | bool]]:
         raise NotImplementedError
 
     @abstractmethod

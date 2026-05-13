@@ -253,8 +253,13 @@ class SyncXController:
     def post_metrics(self, platform_post_id: str) -> dict[str, int]:
         return self._call(self._adapter.post_metrics(platform_post_id))
 
-    def profile_recent_metrics(self, username: str, limit: int = 40) -> list[dict[str, int | str]]:
-        return self._call(self._adapter.profile_recent_metrics(username, limit=limit))
+    def profile_recent_metrics(
+        self,
+        username: str,
+        limit: int = 40,
+        source: str | None = None,
+    ) -> list[dict[str, int | str | bool]]:
+        return self._call(self._adapter.profile_recent_metrics(username, limit=limit, source=source))
 
     def account_stats(self, handle: str | None = None) -> AccountStats:
         return self._call(self._adapter.account_stats(handle))

@@ -131,7 +131,7 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         adapter = self._adapter()
         adapter.page = FakePage()  # type: ignore[assignment]
         adapter._get_authenticated_handle = AsyncMock(return_value="adam_smasha")  # type: ignore[method-assign]
-        adapter._collect_profile_items = AsyncMock(  # type: ignore[method-assign]
+        adapter._collect_recent_owned_created_candidates = AsyncMock(  # type: ignore[method-assign]
             return_value=[
                 {"post_id": "123", "text": "unrelated post"},
                 {"post_id": "2054320737582805502", "text": "xbox 360 Netflix Party Mode: actual avatars, fake couch, felt like hanging out"},
@@ -152,11 +152,39 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         adapter = self._adapter()
         adapter.page = FakePage()  # type: ignore[assignment]
         adapter._get_authenticated_handle = AsyncMock(return_value="adam_smasha")  # type: ignore[method-assign]
-        adapter._collect_profile_items = AsyncMock(return_value=[{"post_id": "123", "text": "same text"}])  # type: ignore[method-assign]
+        adapter._collect_recent_owned_created_candidates = AsyncMock(return_value=[{"post_id": "123", "text": "same text"}])  # type: ignore[method-assign]
 
         post_id = await adapter._find_recent_own_created_post_id("reply", "same text", target_post_id="123")
 
         self.assertIsNone(post_id)
+
+    async def test_created_reply_id_resolver_accepts_owned_text_when_reply_flag_is_missing(self) -> None:
+        class FakePage:
+            url = "https://x.com/home"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter._get_authenticated_handle = AsyncMock(return_value="adam_smasha")  # type: ignore[method-assign]
+        adapter._collect_recent_owned_created_candidates = AsyncMock(  # type: ignore[method-assign]
+            return_value=[
+                {
+                    "post_id": "2054320737582805502",
+                    "author": "adam_smasha",
+                    "text": "Feels like trying is generous, most folks just want a quick headline to dunk on",
+                    "is_reply": False,
+                    "is_quote": False,
+                    "source_surface": "with_replies",
+                }
+            ]
+        )
+
+        post_id = await adapter._find_recent_own_created_post_id(
+            "reply",
+            "Feels like trying is generous, most folks just want a quick headline to dunk on, not read credits",
+            target_post_id="2054323038070485101",
+        )
+
+        self.assertEqual(post_id, "2054320737582805502")
 
     async def test_recent_post_guess_does_not_scan_page_content_by_default(self) -> None:
         class FakePage:
