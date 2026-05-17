@@ -60,11 +60,13 @@ The facade forwards stable service APIs including lifecycle, login state, curren
 - `await read_mentions(account_handle: str, hours_back: int = 2, limit: int = 120, ...)`
 - `await read_post_thread_context(post_id, limit: int = 6, ...) -> list[ObservedPostData]`
 - `await account_stats(handle: str | None = None) -> AccountStats`
-- `await profile_recent_metrics(username: str, limit: int = 40) -> list[dict[str, int | str]]`
+- `await profile_recent_metrics(username: str, limit: int = 40, source: str | None = None) -> list[dict[str, int | str | bool]]`
 - `await post_metrics(platform_post_id: str) -> dict[str, int]`
 - `await capture_post_media(platform_post_id, output_dir, frame_count: int = 3) -> list[MediaCaptureData]`
 
 `read_notifications(unread_only=True)` returns unread notifications without a separate alias method.
+
+`profile_recent_metrics(source="posts" | "with_replies")` samples visible profile posts or replies-surface rows and returns the post id, URL, author handle, text, common metrics, source surface, and `is_reply` / `is_quote` / `is_repost` classification flags. `limit` is capped internally to protect browser scans.
 
 `read_timeline_detailed(force_refresh=True)` performs a home reload before collecting timeline posts. `reset_scroll=True` only presses Home to read the newest visible DOM items at the top of the feed; it does not reload the UI.
 

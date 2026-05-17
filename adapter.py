@@ -2199,6 +2199,62 @@ class XTextAdapter(SocialPlatformAdapter):
                 await self.human.jitter(260, 680)
         return rows
 
+    async def _collect_recent_owned_created_candidates(
+        self,
+        own_handle: str,
+        kind: str,
+        limit: int = 36,
+    ) -> list[dict[str, Any]]:
+        if not self.page:
+            return []
+        own_handle_lower = own_handle.lower()
+        if kind == "reply":
+            surfaces = ("reply", "post")
+        elif kind == "quote":
+            surfaces = ("post", "reply")
+        else:
+            surfaces = ("post", "reply")
+
+        rows: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        per_surface_limit = max(12, min(max(1, int(limit)), 80))
+        for surface_kind in surfaces:
+            if len(rows) >= limit:
+                break
+            if not await self._open_profile_surface(own_handle, surface_kind):
+                continue
+            stagnation_rounds = 0
+            scroll_rounds = max(3, (per_surface_limit // 5) + 4)
+            for round_idx in range(scroll_rounds):
+                articles = self.page.locator("article")
+                total = await self._count_locator(articles)
+                new_items = 0
+                for idx in range(min(total, max(per_surface_limit * 3, 70))):
+                    article = articles.nth(idx)
+                    item = await self._classify_profile_article(article, own_handle)
+                    post_id = str(item.get("post_id") or "")
+                    author = str(item.get("author") or "").lower()
+                    if not post_id or post_id in seen_ids or author != own_handle_lower:
+                        continue
+                    seen_ids.add(post_id)
+                    if bool(item.get("is_repost")):
+                        continue
+                    item["source_surface"] = "with_replies" if surface_kind == "reply" else "posts"
+                    rows.append(item)
+                    new_items += 1
+                    if len(rows) >= limit:
+                        return rows
+                if round_idx < scroll_rounds - 1:
+                    if new_items == 0:
+                        stagnation_rounds += 1
+                    else:
+                        stagnation_rounds = 0
+                    if stagnation_rounds >= 2:
+                        break
+                    await self._random_scroll(random.randint(380, 1180))
+                    await self.human.jitter(260, 680)
+        return rows
+
     async def _resolve_target_article(self, post_id: str) -> Any | None:
         article = await self._find_post_article_in_context(post_id, scan_rounds=1)
         if article:
@@ -3311,20 +3367,32 @@ class XTextAdapter(SocialPlatformAdapter):
 
         return self._account_stats_from_payload(target_handle, payload, captured_at, raw)
 
-    async def profile_recent_metrics(self, username: str, limit: int = 40) -> list[dict[str, int | str]]:
+    async def profile_recent_metrics(
+        self,
+        username: str,
+        limit: int = 40,
+        source: str | None = None,
+    ) -> list[dict[str, int | str | bool]]:
         if not self.page:
             return []
         handle = self._normalize_username(username)
         if not handle:
             return []
-        rows: list[dict[str, int | str]] = []
+        source_filter = str(source or "").strip().lower()
+        if source_filter in {"reply", "replies"}:
+            source_filter = "with_replies"
+        if source_filter and source_filter not in {"posts", "with_replies"}:
+            source_filter = ""
+        rows: list[dict[str, int | str | bool]] = []
         seen: set[str] = set()
-        max_rows = max(5, min(limit, 300))
+        max_rows = max(5, min(limit, 3000))
         row_cap = max_rows * 2
         endpoints = [
             (f"{self.BASE_URL}/{handle}", "posts"),
             (f"{self.BASE_URL}/{handle}/with_replies", "with_replies"),
         ]
+        if source_filter:
+            endpoints = [item for item in endpoints if item[1] == source_filter]
         try:
             for endpoint, source in endpoints:
                 await self._goto(endpoint)
@@ -3342,11 +3410,17 @@ class XTextAdapter(SocialPlatformAdapter):
                         if not post_id or post_id in seen:
                             continue
                         seen.add(post_id)
-                        text = (await self._extract_article_text(article))[:900]
+                        item = await self._classify_profile_article(article, handle)
+                        text = str(item.get("text") or (await self._extract_article_text(article)))[:900]
                         metrics = await self._extract_article_metrics(article)
                         rows.append(
                             {
                                 "post_id": post_id,
+                                "url": str(item.get("url") or href or f"{self.BASE_URL}/i/web/status/{post_id}"),
+                                "author": str(item.get("author") or ""),
+                                "is_reply": bool(item.get("is_reply")),
+                                "is_repost": bool(item.get("is_repost")),
+                                "is_quote": bool(item.get("is_quote")),
                                 "likes": int(metrics.get("likes") or 0),
                                 "replies": int(metrics.get("replies") or 0),
                                 "comments": int(metrics.get("comments") or 0),
@@ -3752,7 +3826,9 @@ class XTextAdapter(SocialPlatformAdapter):
             logger.warning("post_text_submit_failed_after_retries")
             return None
         await self.human.jitter(900, 1700)
-        post_id = await self._guess_recent_post_id()
+        post_id = await self._find_recent_own_created_post_id("post", text)
+        if not post_id:
+            post_id = await self._guess_recent_post_id()
         if not post_id:
             logger.info("post_text_submitted_unknown_post_id")
         return post_id
@@ -3932,7 +4008,9 @@ class XTextAdapter(SocialPlatformAdapter):
                 logger.warning("quote_submit_failed_after_retries target=%s", post_id)
                 return None
             await self.human.jitter(900, 1700)
-            quote_id = await self._guess_recent_post_id()
+            quote_id = await self._find_recent_own_created_post_id("quote", text, target_post_id=post_id)
+            if not quote_id:
+                quote_id = await self._guess_recent_post_id()
             if quote_id and quote_id != post_id:
                 return quote_id
             return "unknown_quote_id"
@@ -4148,7 +4226,9 @@ class XTextAdapter(SocialPlatformAdapter):
                     )
 
                 await self.human.jitter(700, 1500)
-                reply_id = await self._guess_recent_post_id()
+                reply_id = await self._find_recent_own_created_post_id("reply", text, target_post_id=post_id)
+                if not reply_id:
+                    reply_id = await self._guess_recent_post_id()
                 if reply_id and reply_id != post_id:
                     result = await self._action_result(
                         "reply",
@@ -4754,7 +4834,83 @@ class XTextAdapter(SocialPlatformAdapter):
         found = self.STATUS_URL_RE.search(href or "")
         return found.group(1) if found else ""
 
-    async def _guess_recent_post_id(self) -> str | None:
+    def _compact_created_text(self, value: Any) -> str:
+        return re.sub(r"\s+", " ", str(value or "")).strip().lower()
+
+    def _created_text_matches(self, expected: str, candidate: str) -> bool:
+        expected_text = self._compact_created_text(expected)
+        candidate_text = self._compact_created_text(candidate)
+        if len(expected_text) < 12 or len(candidate_text) < 12:
+            return False
+        if expected_text in candidate_text or candidate_text in expected_text:
+            return True
+        prefix_len = min(90, len(expected_text), len(candidate_text))
+        return prefix_len >= 28 and expected_text[:prefix_len] == candidate_text[:prefix_len]
+
+    async def _find_recent_own_created_post_id(
+        self,
+        kind: str,
+        text: str,
+        *,
+        target_post_id: str = "",
+    ) -> str | None:
+        if not self.page:
+            return None
+        own_handle = await self._get_authenticated_handle()
+        if not own_handle:
+            return None
+        expected_kind = kind if kind in {"post", "reply", "quote"} else "post"
+        previous_url = self.page.url or ""
+        try:
+            items = await self._collect_recent_owned_created_candidates(own_handle, expected_kind, limit=48)
+            matched: list[dict[str, Any]] = []
+            for item in items:
+                post_id = str(item.get("post_id") or "")
+                if not post_id or (target_post_id and post_id == target_post_id):
+                    continue
+                if self._created_text_matches(text, str(item.get("text") or "")):
+                    matched.append(item)
+            if matched:
+                def _score(item: dict[str, Any]) -> tuple[int, int, int]:
+                    kind_match = int(
+                        (expected_kind == "reply" and bool(item.get("is_reply")))
+                        or (expected_kind == "quote" and bool(item.get("is_quote")))
+                        or (
+                            expected_kind == "post"
+                            and not bool(item.get("is_reply"))
+                            and not bool(item.get("is_quote"))
+                        )
+                    )
+                    surface_match = int(
+                        (expected_kind == "reply" and item.get("source_surface") == "with_replies")
+                        or (expected_kind in {"post", "quote"} and item.get("source_surface") == "posts")
+                    )
+                    return kind_match, surface_match, len(str(item.get("text") or ""))
+
+                best = sorted(matched, key=_score, reverse=True)[0]
+                logger.info(
+                    "created_post_id_resolved_from_profile kind=%s post_id=%s source=%s is_reply=%s is_quote=%s",
+                    expected_kind,
+                    best.get("post_id"),
+                    best.get("source_surface") or "",
+                    bool(best.get("is_reply")),
+                    bool(best.get("is_quote")),
+                )
+                return str(best.get("post_id") or "") or None
+        except Exception as exc:
+            logger.warning(
+                "created_post_id_profile_resolve_failed kind=%s handle=%s error=%s",
+                expected_kind,
+                own_handle,
+                str(exc)[:260],
+            )
+        finally:
+            if previous_url and self.page and (self.page.url or "") != previous_url:
+                with contextlib.suppress(Exception):
+                    await self._goto(previous_url)
+        return None
+
+    async def _guess_recent_post_id(self, *, allow_page_content: bool = False) -> str | None:
         if not self.page:
             return None
         try:
@@ -4762,6 +4918,8 @@ class XTextAdapter(SocialPlatformAdapter):
             match = self.STATUS_URL_RE.search(current or "")
             if match:
                 return match.group(1)
+            if not allow_page_content:
+                return None
             text = await self._page_content()
             found = self.STATUS_URL_RE.search(text)
             return found.group(1) if found else None
