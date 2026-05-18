@@ -116,7 +116,7 @@ class XTextAdapter(SocialPlatformAdapter):
                         "height": random.randint(self.settings.browser_height_min, self.settings.browser_height_max),
                     }
                     context_kwargs: dict[str, Any] = {
-                        "headless": False,
+                        "headless": bool(self.settings.headless),
                         "viewport": viewport,
                         "user_agent": self.settings.default_user_agent,
                         "args": ["--disable-blink-features=AutomationControlled"],
@@ -178,7 +178,7 @@ class XTextAdapter(SocialPlatformAdapter):
             "height": random.randint(self.settings.browser_height_min, self.settings.browser_height_max),
         }
         context_kwargs: dict[str, Any] = {
-            "headless": False,
+            "headless": bool(self.settings.headless),
             "viewport": viewport,
             "user_agent": self.settings.default_user_agent,
             "args": ["--disable-blink-features=AutomationControlled"],

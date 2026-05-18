@@ -124,6 +124,7 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 - The controller is stateful and intended to be reused across multiple actions inside one started session.
 - Most flows prefer UI clicks and only fall back to direct URL navigation when recovery is needed.
 - Sync Playwright fallback is preferred on Windows to avoid event-loop/subprocess issues.
+- Set `ControllerSettings(headless=True)` to launch Chromium without a visible window. Keep the default visible mode for manual login and debugging.
 - Methods that mutate state should be treated as best-effort browser automation, not transactional API calls.
 - `controller.last_action_error` records the latest soft UI failure with action, URL, selector summary, and message.
 - Set `ControllerSettings(strict_ui_failures=True)` when you want soft UI failures to raise `UIActionError` instead of returning `False` or an empty result.

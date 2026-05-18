@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock
 
 try:
-    from XController import XTextAdapter
+    from XController import ControllerSettings, XTextAdapter
 except ModuleNotFoundError as exc:
     if exc.name != "XController":
         raise
@@ -23,7 +23,7 @@ except ModuleNotFoundError as exc:
     module = importlib.util.module_from_spec(spec)
     sys.modules["XController"] = module
     spec.loader.exec_module(module)
-    from XController import XTextAdapter
+    from XController import ControllerSettings, XTextAdapter
 
 
 class NoopHuman:
@@ -116,6 +116,21 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.adapter._sync_mode)
         self.assertIs(self.adapter.context, self.adapter._sync_context)
         self.assertIs(self.adapter.page, self.adapter._sync_page)
+
+    async def test_sync_fallback_uses_headless_setting(self) -> None:
+        self.adapter.settings = ControllerSettings(headless=True, playwright_mode="sync", prefer_sync_playwright=True)
+        captured: dict[str, object] = {}
+
+        async def run_sync(func, context_kwargs):
+            captured.update(context_kwargs)
+            return None
+
+        self.adapter._run_sync = AsyncMock(side_effect=run_sync)
+
+        await self.adapter._start_sync_fallback()
+
+        self.assertTrue(captured["headless"])
+        self.assertTrue(self.adapter._sync_mode)
 
     async def test_close_cleans_up_sync_mode_resources(self) -> None:
         sync_context = FakeSyncContext()
