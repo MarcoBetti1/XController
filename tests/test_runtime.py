@@ -47,6 +47,48 @@ class FakeSyncPlaywright:
         self.stopped = True
 
 
+class FakeLocator:
+    def __init__(self, count: int) -> None:
+        self._count = count
+
+    async def count(self) -> int:
+        return self._count
+
+
+class FakeArticle:
+    def __init__(self, name: str, status_ids: set[str]) -> None:
+        self.name = name
+        self.status_ids = status_ids
+
+    async def count(self) -> int:
+        return 1
+
+    def locator(self, selector: str) -> FakeLocator:
+        matches = any(f"/status/{post_id}" in selector for post_id in self.status_ids)
+        return FakeLocator(1 if matches else 0)
+
+
+class FakeArticleList:
+    def __init__(self, articles: list[FakeArticle]) -> None:
+        self._articles = articles
+        self.first = articles[0]
+
+    async def count(self) -> int:
+        return len(self._articles)
+
+    def nth(self, index: int) -> FakeArticle:
+        return self._articles[index]
+
+
+class FakeArticlePage:
+    def __init__(self, articles: list[FakeArticle]) -> None:
+        self._articles = FakeArticleList(articles)
+
+    def locator(self, selector: str) -> FakeArticleList:
+        assert selector == "article"
+        return self._articles
+
+
 class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -98,6 +140,23 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.adapter.page)
         self.assertFalse(self.adapter._sync_mode)
         self.assertIsNone(self.adapter._executor)
+
+    async def test_post_metrics_selects_article_matching_target_status(self) -> None:
+        parent = FakeArticle("parent", {"111"})
+        reply = FakeArticle("reply", {"222"})
+        self.adapter.page = FakeArticlePage([parent, reply])  # type: ignore[assignment]
+
+        selected = await self.adapter._post_metrics_article("222")
+
+        self.assertIs(selected, reply)
+
+    async def test_post_metrics_article_falls_back_to_first_article(self) -> None:
+        parent = FakeArticle("parent", {"111"})
+        self.adapter.page = FakeArticlePage([parent])  # type: ignore[assignment]
+
+        selected = await self.adapter._post_metrics_article("333")
+
+        self.assertIs(selected, parent)
 
 
 if __name__ == "__main__":

@@ -4768,14 +4768,32 @@ class XTextAdapter(SocialPlatformAdapter):
         if not self.page:
             return metrics
         try:
-            article = self.page.locator("article").first
-            if await self._count_locator(article):
+            article = await self._post_metrics_article(platform_post_id)
+            if article and await self._count_locator(article):
                 article_metrics = await self._extract_article_metrics(article)
                 for key in metrics:
                     metrics[key] = max(int(metrics.get(key) or 0), int(article_metrics.get(key) or 0))
         except Exception as exc:
             logger.warning("post_metrics_parse_failed target=%s error=%s", platform_post_id, str(exc)[:260])
         return metrics
+
+    async def _post_metrics_article(self, platform_post_id: str) -> Any | None:
+        if not self.page:
+            return None
+        post_id = self._normalize_post_id(platform_post_id)
+        if not post_id:
+            return None
+        articles = self.page.locator("article")
+        try:
+            article_count = min(await self._count_locator(articles), 12)
+        except Exception:
+            article_count = 0
+        for index in range(article_count):
+            article = articles.nth(index)
+            status_link = article.locator(f'a[href*="/status/{post_id}"]')
+            if await self._count_locator(status_link):
+                return article
+        return articles.first if article_count else None
 
     async def _open_post_page(self, platform_post_id: str) -> bool:
         if not self.page:
