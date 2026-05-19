@@ -71,7 +71,7 @@ class FakeArticle:
 class FakeArticleList:
     def __init__(self, articles: list[FakeArticle]) -> None:
         self._articles = articles
-        self.first = articles[0]
+        self.first = articles[0] if articles else FakeMissingArticle()
 
     async def count(self) -> int:
         return len(self._articles)
@@ -87,6 +87,14 @@ class FakeArticlePage:
     def locator(self, selector: str) -> FakeArticleList:
         assert selector == "article"
         return self._articles
+
+
+class FakeMissingArticle:
+    async def count(self) -> int:
+        return 0
+
+    def locator(self, _selector: str) -> FakeLocator:
+        return FakeLocator(0)
 
 
 class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -172,6 +180,14 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
         selected = await self.adapter._post_metrics_article("333")
 
         self.assertIs(selected, parent)
+
+    async def test_post_metrics_returns_empty_when_status_page_has_no_article(self) -> None:
+        self.adapter.page = FakeArticlePage([])  # type: ignore[assignment]
+        self.adapter._open_post_page = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        metrics = await self.adapter.post_metrics("333")
+
+        self.assertEqual(metrics, {})
 
 
 if __name__ == "__main__":

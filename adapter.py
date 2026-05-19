@@ -4764,18 +4764,20 @@ class XTextAdapter(SocialPlatformAdapter):
     async def post_metrics(self, platform_post_id: str) -> dict[str, int]:
         if not await self._open_post_page(platform_post_id):
             return {}
-        metrics = self._zero_metrics()
         if not self.page:
-            return metrics
+            return {}
         try:
             article = await self._post_metrics_article(platform_post_id)
-            if article and await self._count_locator(article):
-                article_metrics = await self._extract_article_metrics(article)
-                for key in metrics:
-                    metrics[key] = max(int(metrics.get(key) or 0), int(article_metrics.get(key) or 0))
+            if not article or not await self._count_locator(article):
+                return {}
+            metrics = self._zero_metrics()
+            article_metrics = await self._extract_article_metrics(article)
+            for key in metrics:
+                metrics[key] = max(int(metrics.get(key) or 0), int(article_metrics.get(key) or 0))
+            return metrics
         except Exception as exc:
             logger.warning("post_metrics_parse_failed target=%s error=%s", platform_post_id, str(exc)[:260])
-        return metrics
+        return {}
 
     async def _post_metrics_article(self, platform_post_id: str) -> Any | None:
         if not self.page:
@@ -4795,6 +4797,50 @@ class XTextAdapter(SocialPlatformAdapter):
                 return article
         return articles.first if article_count else None
 
+    async def _status_page_has_rendered_article(self, post_id: str) -> bool:
+        if not self.page:
+            return False
+        articles = self.page.locator("article")
+        try:
+            article_count = min(await self._count_locator(articles), 12)
+        except Exception:
+            article_count = 0
+        if article_count <= 0:
+            return False
+        for index in range(article_count):
+            article = articles.nth(index)
+            with contextlib.suppress(Exception):
+                status_link = article.locator(f'a[href*="/status/{post_id}"]')
+                if await self._count_locator(status_link):
+                    return True
+        current_url = self.page.url or ""
+        return f"/status/{post_id}" in current_url
+
+    async def _status_page_missing(self) -> bool:
+        if not self.page:
+            return False
+        try:
+            body = (await self._inner_text(self.page.locator("body"), timeout_ms=1000)).lower()
+        except Exception:
+            return False
+        missing_markers = (
+            "this page doesn't exist",
+            "this page doesn\u2019t exist",
+            "post is unavailable",
+            "something went wrong",
+        )
+        return any(marker in body for marker in missing_markers)
+
+    async def _wait_for_status_article(self, post_id: str, *, timeout_ms: int = 4500) -> bool:
+        deadline = time.monotonic() + (max(500, timeout_ms) / 1000.0)
+        while time.monotonic() < deadline:
+            if await self._status_page_has_rendered_article(post_id):
+                return True
+            if await self._status_page_missing():
+                return False
+            await self.human.jitter(180, 420)
+        return await self._status_page_has_rendered_article(post_id)
+
     async def _open_post_page(self, platform_post_id: str) -> bool:
         if not self.page:
             return False
@@ -4813,7 +4859,7 @@ class XTextAdapter(SocialPlatformAdapter):
                     await self.human.jitter(280, 820)
                     await self._wait_network_idle(1300)
                     current_url = self.page.url or ""
-                    if self.STATUS_URL_RE.search(current_url):
+                    if self.STATUS_URL_RE.search(current_url) and await self._wait_for_status_article(post_id):
                         return True
                 except Exception as ex:
                     if self._is_driver_connection_closed(ex):
@@ -4833,11 +4879,10 @@ class XTextAdapter(SocialPlatformAdapter):
             try:
                 await self._goto(candidate)
                 current_url = self.page.url or ""
-                if self.STATUS_URL_RE.search(current_url):
-                    await self.human.jitter(400, 1000)
+                if self.STATUS_URL_RE.search(current_url) and await self._wait_for_status_article(post_id):
                     return True
                 content = await self._page_content()
-                if f"/status/{post_id}" in content:
+                if f"/status/{post_id}" in content and await self._wait_for_status_article(post_id):
                     return True
             except Exception as ex:
                 if self._is_driver_connection_closed(ex):
