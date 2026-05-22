@@ -3934,6 +3934,20 @@ class XTextAdapter(SocialPlatformAdapter):
                 result = await self._action_result("like", ok=True, target_post_id=post_id)
                 result.confirmation_observed = True
                 return result
+            fallback = await self.engage_post(post_id, do_view=False, do_like=True)
+            if fallback.get("liked"):
+                result = await self._action_result("like", ok=True, target_post_id=post_id, raw={"fallback": fallback})
+                result.submit_clicked = True
+                result.confirmation_observed = True
+                return result
+            if fallback.get("opened"):
+                return await self._action_result(
+                    "like",
+                    target_post_id=post_id,
+                    failure_reason="like_button_not_found",
+                    failure_stage="action_control",
+                    raw={"fallback": fallback},
+                )
             preflight = await self.preflight_action(post_id, action="like")
             logger.info("like_inline_not_found target=%s page=%s", platform_post_id, self.page.url or "")
             return await self._action_result(

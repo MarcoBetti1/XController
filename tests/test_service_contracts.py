@@ -124,6 +124,23 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(post.ok)
         self.assertEqual(post.action, "post")
 
+    async def test_like_post_detailed_uses_navigation_fallback_after_inline_miss(self) -> None:
+        class FakePage:
+            url = "https://x.com/home"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter._like_in_current_context = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        adapter.engage_post = AsyncMock(return_value={"opened": True, "viewed": False, "liked": True})  # type: ignore[method-assign]
+        adapter.preflight_action = AsyncMock()  # type: ignore[method-assign]
+
+        result = await adapter.like_post_detailed("123")
+
+        self.assertTrue(result.ok)
+        self.assertTrue(result.confirmation_observed)
+        adapter.engage_post.assert_awaited_once_with("123", do_view=False, do_like=True)
+        adapter.preflight_action.assert_not_awaited()
+
     async def test_created_post_id_resolver_matches_recent_owned_text(self) -> None:
         class FakePage:
             url = "https://x.com/home"
