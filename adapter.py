@@ -2971,6 +2971,23 @@ class XTextAdapter(SocialPlatformAdapter):
         metrics["reposts"] = self._extract_metric_token(raw, r"([\d.,]+[kmb]?)\s+(?:reposts?|retweets?)\b")
         return metrics
 
+    def _line_metric_label(self, line: str) -> str | None:
+        normalized = re.sub(r"[^a-z]", "", str(line or "").lower())
+        return {
+            "reply": "replies",
+            "replies": "replies",
+            "comment": "comments",
+            "comments": "comments",
+            "repost": "reposts",
+            "reposts": "reposts",
+            "retweet": "reposts",
+            "retweets": "reposts",
+            "like": "likes",
+            "likes": "likes",
+            "view": "views",
+            "views": "views",
+        }.get(normalized)
+
     def _article_metric_region(self, body: str, article_text: str) -> str:
         raw_body = str(body or "")
         raw_text = str(article_text or "").strip()
@@ -2996,14 +3013,41 @@ class XTextAdapter(SocialPlatformAdapter):
     def _extract_metrics_from_article_region(self, region: str) -> dict[str, int]:
         metrics = self._extract_metrics_from_text(region)
         lines = [line.strip() for line in str(region or "").splitlines() if line.strip()]
-        numeric_values: list[int] = []
-        for line in lines:
-            if re.fullmatch(r"\d+\s?[smhd]", line):
+        consumed: set[int] = set()
+        for idx, line in enumerate(lines):
+            if not re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?", line):
                 continue
-            if re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?", line):
-                value = self._parse_count_token(line)
-                if 0 <= value < 5_000_000_000:
-                    numeric_values.append(value)
+            value = self._parse_count_token(line)
+            if not 0 <= value < 5_000_000_000:
+                continue
+            label = self._line_metric_label(lines[idx + 1]) if idx + 1 < len(lines) else None
+            label_idx = idx + 1 if label else None
+            if not label and idx > 0:
+                label = self._line_metric_label(lines[idx - 1])
+                label_idx = idx - 1 if label else None
+            if not label:
+                continue
+            key = "replies" if label == "comments" else label
+            metrics[key] = max(metrics.get(key, 0), value)
+            if key == "replies":
+                metrics["comments"] = metrics["replies"]
+            consumed.add(idx)
+            if label_idx is not None:
+                consumed.add(label_idx)
+
+        numeric_values_reversed: list[int] = []
+        for idx in range(len(lines) - 1, -1, -1):
+            line = lines[idx]
+            if idx in consumed or self._line_metric_label(line):
+                break
+            if re.fullmatch(r"\d+\s?[smhd]", line):
+                break
+            if not re.fullmatch(r"\d[\d,]*(?:\.\d+)?\s?[kKmMbB]?", line):
+                break
+            value = self._parse_count_token(line)
+            if 0 <= value < 5_000_000_000:
+                numeric_values_reversed.append(value)
+        numeric_values = list(reversed(numeric_values_reversed))
         if len(numeric_values) >= 4:
             replies, reposts, likes, views = numeric_values[-4:]
             metrics["replies"] = max(metrics["replies"], replies)

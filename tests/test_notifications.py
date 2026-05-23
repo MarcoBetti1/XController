@@ -406,6 +406,34 @@ class PostRestrictionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["likes"], 9)
         self.assertEqual(metrics["views"], 368)
 
+    async def test_article_metrics_split_line_views_do_not_become_reposts(self) -> None:
+        article = FakeArticle(
+            actor="PixelGamingCo",
+            post_id="2057148652787765310",
+            tweet_text="all that hype is not free, somebody is eating the cost",
+            body=(
+                "PixelGamingCo\n"
+                "@PixelGamingCo\n"
+                "all that hype is not free, somebody is eating the cost\n"
+                "0\n"
+                "2,627\n"
+                "Views\n"
+                "14\n"
+                "Likes\n"
+                "2,627\n"
+                "Views"
+            ),
+            notification_type_text="",
+        )
+
+        metrics = await self.adapter._extract_article_metrics(article)
+
+        self.assertEqual(metrics["replies"], 0)
+        self.assertEqual(metrics["comments"], 0)
+        self.assertEqual(metrics["reposts"], 0)
+        self.assertEqual(metrics["likes"], 14)
+        self.assertEqual(metrics["views"], 2627)
+
     async def test_notifications_include_author_reply_limit_notice(self) -> None:
         self.adapter.page = FakePage(
             [
