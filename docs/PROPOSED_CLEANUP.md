@@ -1,28 +1,23 @@
-# Proposed Cleanup & Improvement Plan (XController)
+# Proposed Cleanup Plan (Archived Status)
 
-## 1. Method Consolidation (Removing Redundancy)
-Currently, several methods act as thin wrappers or duplicates of others. Consolidating these will shrink the API surface without losing any functionality.
+This file is kept for historical context. The original cleanup plan has been reviewed against the current documented/public behavior.
 
-*   **Combine `read_notifications` & `read_unread_notifications`**
-    *   *Change:* Remove `read_unread_notifications`.
-    *   *Reason:* `read_notifications(limit=20, unread_only=True)` handles this natively. Having two methods is redundant.
-*   **Combine `recover_home` & `refresh_home`**
-    *   *Change:* Deprecate both in favor of a single `return_home(force_refresh: bool = False)`.
-    *   *Reason:* They do the exact same conceptual action. A single boolean parameter makes the developer's intent clearer.
-*   **Remove `comment_post` Alias**
-    *   *Change:* Remove `comment_post` and strictly enforce `reply_to_post`.
-    *   *Reason:* X terminology canonical uses "reply." Reducing aliases reduces confusion for downstream developers.
-*   **Consolidate Media Convenience Wrappers**
-    *   *Change:* Consider deprecating `post_image`, `reply_with_image`, and `quote_post_with_image`.
-    *   *Reason:* The core methods (`post_text`, `reply_to_post`, `quote_post`) already accept an `image_paths` argument.
+## Status Summary
 
-## 2. Timeline Navigation Behavior (Confirmed & Tested)
-*   *Current State:* `read_timeline` and `read_following_timeline` gracefully check current UI state via `settle_home()`. They **do not** hard-refresh if already on the correct tab.
-*   *Proposed Improvement:* The `reset_scroll=True` behavior (pressing the "Home" key to go to the top of the feed) is excellent, but we should make sure downstream services understand that passing `force_refresh=True` forces a full UI reload, whereas `reset_scroll=True` just fetches the newest visible items at the top of the DOM.
+| Original plan item | Status | Notes |
+| --- | --- | --- |
+| Remove `read_unread_notifications` in favor of `read_notifications(unread_only=True)` | Implemented | Reflected in API docs and changelog; unread reads are documented through `read_notifications(unread_only=True)`. |
+| Replace `recover_home` / `refresh_home` with `return_home(force_refresh=False)` | Implemented | Current docs describe `return_home(force_refresh=False)` as the canonical home recovery entrypoint. |
+| Remove `comment_post` in favor of `reply_to_post` | Implemented | Current docs describe `reply_to_post()` as canonical and note `comment_post()` removal. |
+| Consolidate image convenience wrappers | Partially implemented (deprecation path active) | `post_image`, `reply_with_image`, and `quote_post_with_image` are still present as deprecated compatibility wrappers. |
+| Clarify `force_refresh` vs `reset_scroll` timeline behavior | Implemented in docs | Behavior is documented in `docs/API.md` for timeline reads and post-action settling. |
+| Move from boolean methods to `*_detailed()` action results | Active future direction | Still a compatibility migration path; no removal is planned in this docs cleanup update. |
+| Keep base contract aligned with cleanup choices | Implemented | Public documentation describes the consolidated method names and compatibility surface. |
 
-## 3. Standardize Return Types (Moving away from Booleans)
-*   *Change:* Currently, methods like `like_post` or `delete_post` return a simple `bool`. However, you already have `*_detailed` variants (e.g., `like_post_detailed`) that return an `ActionResult` with rich failure diagnostics (`failure_reason`, `failure_stage`).
-*   *Action:* Phase out the `bool` returning methods entirely in a future major version (v2.0), making the `*_detailed` methods the default. This prevents callers from losing critical Playwright trace information when UI actions fail.
+## Current Source of Truth
 
-## 4. Update the Base Interface (`base.py`)
-*   When removing `read_unread_notifications`, `refresh_home`, `recover_home`, and `comment_post`, ensure `SocialPlatformAdapter` in `base.py` is updated to match the new strict contract.
+Use these docs for current behavior instead of this historical plan:
+
+- [Public API contract](PUBLIC_CONTRACT.md)
+- [API notes](API.md)
+- [Change log](../CHANGELOG.md)

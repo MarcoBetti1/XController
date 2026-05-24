@@ -4,6 +4,7 @@ Use this file for the next feature or release notes.
 
 ## Unreleased
 
+- Docs: add `docs/PUBLIC_CONTRACT.md`, add `docs/README.md` index, and archive the cleanup planning notes with current status.
 - Add `AccountStats` and `account_stats(handle=None)` for public profile/account-level stats with compact count normalization and raw parse diagnostics.
 - Add service-integration data models: `ActionResult`, `ActionPreflight`, `TimelineReadResult`, `MediaPreflight`, `ControllerHealth`, and `ObservedMediaData`.
 - Add detailed action methods, action preflight, media preflight, thread-context reads, health checks, and debug snapshots for long-running browser services.

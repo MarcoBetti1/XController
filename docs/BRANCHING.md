@@ -1,6 +1,6 @@
 # Branching Workflow
 
-This repository uses two long-lived branches with different responsibilities.
+This repository currently uses two long-lived branches with different responsibilities.
 
 ## Branch Roles
 
@@ -9,7 +9,7 @@ This repository uses two long-lived branches with different responsibilities.
 - `labui-testing`
   Development branch for `lab_ui`, `lab_api`, manual walkthrough tooling, and automated tests.
 
-The downstream project should update from `main`, not from `labui-testing`.
+Downstream consumers should update from `main`, not from `labui-testing`.
 
 ## Daily Workflow
 
