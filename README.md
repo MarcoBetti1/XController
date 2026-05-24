@@ -105,15 +105,17 @@ Compatibility notes:
 - `base.py`: shared adapter contract and post model
 - `settings.py`: runtime settings and configuration normalization
 - `human.py`: human-like timing and mouse/typing helpers
-- `docs/API.md`: method-level API notes and compatibility guidance
+- `docs/PUBLIC_CONTRACT.md`: package-level public surface and compatibility contract
+- `docs/API.md`: method-level API notes and detailed behavior guidance
 - `docs/ARCHITECTURE.md`: internal structure and extension points
 - `docs/BRANCHING.md`: branch responsibilities and daily git workflow
 - `docs/CI_CD.md`: CI checks and release/update process
-- `CHANGELOG.md`: next-feature notes
+- `docs/PROPOSED_CLEANUP.md`: archived cleanup-planning status
+- `CHANGELOG.md`: unreleased and release notes
 
 ## Branch Workflow
 
-- `main`: reusable controller package only. This is the branch the downstream project should pull from.
+- `main`: reusable controller package only. This is the branch downstream consumers should pull from.
 - `labui-testing`: manual UI/API tooling and test-only work. Keep it rebased on `main`.
 - When a core fix is developed on `labui-testing`, cherry-pick or open a focused PR back into `main`. Do not merge the branch wholesale or the lab/test files come back.
 
@@ -138,14 +140,17 @@ See [Branching workflow](docs/BRANCHING.md) for the exact commands.
 
 ## CI/CD
 
-GitHub Actions should validate `main` before the downstream project updates from it. The included workflow performs install/import/build checks on both `main` and `labui-testing`, and runs the `tests/` suite with `unittest` discovery only when tests exist on the branch.
+Validate `main` before the downstream project updates from it. CI policy and release/update steps are documented in `docs/CI_CD.md`.
 
 See [CI/CD instructions](docs/CI_CD.md) for the release and update flow.
 
 ## Additional Docs
 
+- [Docs index](docs/README.md)
+- [Public API contract](docs/PUBLIC_CONTRACT.md)
 - [API reference](docs/API.md)
 - [Architecture notes](docs/ARCHITECTURE.md)
 - [Branching workflow](docs/BRANCHING.md)
 - [CI/CD instructions](docs/CI_CD.md)
+- [Archived cleanup-plan status](docs/PROPOSED_CLEANUP.md)
 - [Change log](CHANGELOG.md)

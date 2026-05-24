@@ -2,6 +2,8 @@
 
 This document describes the public package surface shipped on `main`.
 
+For import and compatibility boundaries, see [Public API contract](PUBLIC_CONTRACT.md).
+
 This package exposes one main controller class:
 
 - `XController`
