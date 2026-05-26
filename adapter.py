@@ -4853,7 +4853,8 @@ class XTextAdapter(SocialPlatformAdapter):
             status_link = article.locator(f'a[href*="/status/{post_id}"]')
             if await self._count_locator(status_link):
                 return article
-        return articles.first if article_count else None
+        logger.warning("post_metrics_target_article_missing target=%s rendered_articles=%s", post_id, article_count)
+        return None
 
     async def _status_page_has_rendered_article(self, post_id: str) -> bool:
         if not self.page:
