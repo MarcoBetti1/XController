@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Posting, engagement, and content-mutation flows for XTextAdapter."""
+
+from __future__ import annotations
 
 import contextlib
 import logging
