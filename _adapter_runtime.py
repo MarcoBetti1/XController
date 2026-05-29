@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
-import json
+import asyncio
+import contextlib
 import logging
 import os
 import random
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Sequence
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import urlparse
 
 from playwright.async_api import BrowserContext, Page, async_playwright
 from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as SyncPage, sync_playwright as sync_playwright
