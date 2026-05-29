@@ -358,7 +358,8 @@ class _AdapterReadMixin:
         text = raw.replace("Z", "+00:00")
         try:
             parsed = datetime.fromisoformat(text)
-        except Exception:
+        except Exception as exc:
+            logger.debug("parse_iso_datetime_failed value=%s error=%s", raw[:120], str(exc)[:260])
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
@@ -373,7 +374,8 @@ class _AdapterReadMixin:
                 return None
             stamp = await self._get_attribute(time_node, "datetime")
             return self._parse_iso_datetime(stamp)
-        except Exception:
+        except Exception as exc:
+            logger.debug("article_timestamp_extraction_failed error=%s", str(exc)[:260])
             return None
 
     async def read_mentions(
@@ -560,7 +562,8 @@ class _AdapterReadMixin:
             token = token[:-1]
         try:
             return int(float(token) * mult)
-        except Exception:
+        except Exception as exc:
+            logger.debug("parse_count_token_failed token=%s error=%s", token[:80], str(exc)[:260])
             return 0
 
     def _extract_metric_token(self, text: str, pattern: str) -> int:
@@ -684,8 +687,8 @@ class _AdapterReadMixin:
             parsed = self._extract_metrics_from_article_region(metric_region)
             for key in metrics:
                 metrics[key] = max(metrics[key], int(parsed.get(key) or 0))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("extract_article_metrics_text_failed error=%s", str(exc)[:260])
 
         # Pull aria-label text from known metric buttons as a fallback.
         selector_map = {
@@ -710,7 +713,13 @@ class _AdapterReadMixin:
                     token = self._extract_metric_token(aria, r"([\d.,]+[kmb]?)")
                     if token > 0:
                         metrics[key] = max(metrics[key], token)
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "extract_article_metrics_button_failed key=%s selector=%s error=%s",
+                    key,
+                    selector,
+                    str(exc)[:260],
+                )
                 continue
         metrics["comments"] = metrics["replies"]
         return metrics
@@ -741,7 +750,8 @@ class _AdapterReadMixin:
     def _link_path_matches(self, href: str, endings: Sequence[str]) -> bool:
         try:
             path = urlparse(str(href or "")).path.rstrip("/").lower()
-        except Exception:
+        except Exception as exc:
+            logger.debug("link_path_match_failed href=%s error=%s", str(href)[:200], str(exc)[:260])
             return False
         return any(path.endswith(f"/{ending.strip('/').lower()}") for ending in endings)
 
@@ -1269,8 +1279,10 @@ class _AdapterReadMixin:
 
         page_html = await self._page_content()
         html_path.write_text(page_html, encoding="utf-8")
-        with contextlib.suppress(Exception):
+        try:
             await self._screenshot(str(screenshot_path))
+        except Exception as exc:
+            logger.debug("debug_snapshot_screenshot_failed path=%s error=%s", str(screenshot_path), str(exc)[:260])
 
         articles_summary: list[dict[str, Any]] = []
         article_count = 0
@@ -1278,8 +1290,10 @@ class _AdapterReadMixin:
             articles = self.page.locator("article")
             article_count = await self._count_locator(articles)
             for idx in range(min(article_count, max(0, int(article_limit)))):
-                with contextlib.suppress(Exception):
+                try:
                     articles_summary.append(await self._article_summary(articles.nth(idx), thread_index=idx))
+                except Exception as exc:
+                    logger.debug("debug_snapshot_article_summary_failed index=%s error=%s", idx, str(exc)[:260])
 
         selector_probe = {
             "reply_button": bool(self.page and await self._find_first(ui.COMMENT_BUTTONS, timeout_ms=200)),
@@ -1341,7 +1355,8 @@ class _AdapterReadMixin:
                     .map(node => String(node.innerText || node.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 240))"""
             )
             return [str(item) for item in value] if isinstance(value, list) else []
-        except Exception:
+        except Exception as exc:
+            logger.debug("visible_dialogs_probe_failed error=%s", str(exc)[:260])
             return []
 
     async def health_check(self) -> ControllerHealth:
