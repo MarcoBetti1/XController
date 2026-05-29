@@ -25,6 +25,7 @@ from ._diagnostics import ActionFailureInfo, UIActionError
 from .base import (
     ActionResult,
     LoginState,
+    MediaCaptureData,
     ObservedMediaData,
     ObservedPostData,
 )
