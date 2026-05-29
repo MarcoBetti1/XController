@@ -189,6 +189,23 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(metrics, {})
 
+    async def test_submit_post_logs_warning_when_meta_enter_fails(self) -> None:
+        self.adapter.page = object()  # type: ignore[assignment]
+        self.adapter._find_first = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        self.adapter._wait_for_post_submission = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        async def fake_keyboard_press(key: str) -> None:
+            if key == "Meta+Enter":
+                raise RuntimeError("meta boom")
+
+        self.adapter._keyboard_press = AsyncMock(side_effect=fake_keyboard_press)  # type: ignore[method-assign]
+
+        with self.assertLogs("XController._adapter_runtime", level="WARNING") as logs:
+            submitted = await self.adapter._submit_post()
+
+        self.assertFalse(submitted)
+        self.assertTrue(any("submit_post_shortcut_failed" in line and "Meta+Enter" in line for line in logs.output))
+
 
 if __name__ == "__main__":
     unittest.main()
