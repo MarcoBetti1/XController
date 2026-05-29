@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Public XController adapter surface composed from cohesive internal concern modules."""
+
+from __future__ import annotations
 
 import logging
 import re

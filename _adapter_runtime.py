@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Lifecycle, startup, navigation, and low-level browser helpers for XTextAdapter."""
+
+from __future__ import annotations
 
 import asyncio
 import contextlib

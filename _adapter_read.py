@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Timeline, notification, account, and diagnostics read flows for XTextAdapter."""
+
+from __future__ import annotations
 
 import logging
 import contextlib
