@@ -4,6 +4,12 @@ Use this file for the next feature or release notes.
 
 ## Unreleased
 
+- Refactor the former monolithic `adapter.py` into cohesive internal modules:
+  `_adapter_runtime.py`, `_adapter_read.py`, and `_adapter_write.py` while keeping
+  `XController`/`XTextAdapter` imports and behavior unchanged from the package root.
+- Standardize adapter module loggers to module-local `logging.getLogger(__name__)`.
+- Keep compatibility exports used by the sync facade (`ImagePath`, `ImagePathInput`)
+  on `adapter.py` after the internal split.
 - Add `AccountStats` and `account_stats(handle=None)` for public profile/account-level stats with compact count normalization and raw parse diagnostics.
 - Add service-integration data models: `ActionResult`, `ActionPreflight`, `TimelineReadResult`, `MediaPreflight`, `ControllerHealth`, and `ObservedMediaData`.
 - Add detailed action methods, action preflight, media preflight, thread-context reads, health checks, and debug snapshots for long-running browser services.
