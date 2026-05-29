@@ -1025,8 +1025,8 @@ class _AdapterRuntimeMixin:
                 await self.human.jitter(220, 560)
                 if await self._wait_for_post_submission(3.5):
                     return True
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("submit_post_shortcut_failed attempt=%s key=Meta+Enter error=%s", attempt, str(exc)[:260])
         return False
 
     async def _is_visible(self, locator: Any) -> bool:
@@ -1507,8 +1507,8 @@ class _AdapterRuntimeMixin:
                     await self._click(home_btn)
                     await self.human.jitter(220, 620)
                     await self._wait_network_idle(1200)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("open_home_click_failed error=%s", str(exc)[:260])
                 if await self._looks_like_home_timeline():
                     return True
         return False
@@ -1586,8 +1586,8 @@ class _AdapterRuntimeMixin:
             await self._keyboard_press("Control+A")
             await self._keyboard_press("Backspace")
             await self.human.jitter(60, 220)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("clear_input_like_human_failed error=%s", str(exc)[:260])
 
     async def _open_search_query(self, query: str) -> bool:
         if not self.page:
