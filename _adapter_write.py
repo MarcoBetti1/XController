@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 import re
+import time
+import warnings
 from typing import Any
 
 from . import _ui_selectors as ui
+from ._adapter_runtime import ImagePathInput
 from .base import ActionResult
 
 logger = logging.getLogger(__name__)
@@ -81,7 +85,12 @@ class _AdapterWriteMixin:
         return post_id
 
     async def post_text_detailed(self, text: str, image_paths: ImagePathInput | None = None) -> ActionResult:
-        """Create content on X using the `post_text_detailed` flow."""
+        """Create a post and return structured action diagnostics.
+
+        Args:
+            text: Post body text to submit.
+            image_paths: Optional image path(s) to attach before submit.
+        """
         if not self.page:
             return await self._action_result("post", failure_reason="page_not_started", failure_stage="not_started")
         media_preflight = await self.attach_images_preflight(image_paths)
@@ -109,12 +118,22 @@ class _AdapterWriteMixin:
         )
 
     async def post_text(self, text: str, image_paths: ImagePathInput | None = None) -> str | None:
-        """Create content on X using the `post_text` flow."""
+        """Create a post and return the created post id when available.
+
+        Args:
+            text: Post body text to submit.
+            image_paths: Optional image path(s) to attach before submit.
+        """
         result = await self.post_text_detailed(text, image_paths=image_paths)
         return result.created_post_id if result.ok else None
 
     async def post_image(self, image_paths: ImagePathInput, text: str = "") -> str | None:
-        """Create content on X using the `post_image` flow."""
+        """Create a post with one or more images (deprecated compatibility helper).
+
+        Args:
+            image_paths: Image path(s) to attach.
+            text: Optional text content to include with the media post.
+        """
         warnings.warn(
             "post_image() is deprecated; use post_text(text, image_paths=...) instead.",
             DeprecationWarning,

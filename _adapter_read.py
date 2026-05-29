@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import logging
 import contextlib
+import hashlib
+import json
 import os
+import random
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
-from urllib.parse import urlparse
+from typing import Any, Sequence
+from urllib.parse import quote_plus, urlparse
 
 from . import _ui_selectors as ui
+from ._adapter_runtime import ImagePath, ImagePathInput
 from .base import (
     AccountStats,
     ActionPreflight,
@@ -20,6 +24,7 @@ from .base import (
     MediaPreflight,
     ObservedMediaData,
     ObservedNotificationData,
+    ObservedPostData,
     TimelineReadResult,
 )
 
@@ -35,7 +40,14 @@ class _AdapterReadMixin:
         force_refresh: bool = False,
         reset_scroll: bool = False,
     ) -> TimelineReadResult:
-        """Read data from the active X surface using the `read_timeline_detailed` flow."""
+        """Read timeline posts with tab, refresh, and scroll-reset controls.
+
+        Args:
+            limit: Maximum number of posts to collect from the timeline.
+            tab: Timeline tab to target (`for_you` or `following`).
+            force_refresh: Whether to force home refresh before collecting posts.
+            reset_scroll: Whether to move to the top of the timeline before reading.
+        """
         limit = max(1, int(limit))
         requested_tab = str(tab or "for_you").strip().lower().replace("-", "_").replace(" ", "_")
         if requested_tab not in {"for_you", "following"}:
@@ -124,12 +136,20 @@ class _AdapterReadMixin:
         )
 
     async def read_timeline(self, limit: int = 20) -> list[ObservedPostData]:
-        """Read data from the active X surface using the `read_timeline` flow."""
+        """Read posts from the default home timeline.
+
+        Args:
+            limit: Maximum number of posts to return.
+        """
         result = await self.read_timeline_detailed(limit=limit)
         return result.posts
 
     async def read_following_timeline(self, limit: int = 20) -> list[ObservedPostData]:
-        """Read data from the active X surface using the `read_following_timeline` flow."""
+        """Read posts from the Following timeline tab.
+
+        Args:
+            limit: Maximum number of posts to return.
+        """
         result = await self.read_timeline_detailed(limit=limit, tab="following")
         return result.posts
 
@@ -208,7 +228,7 @@ class _AdapterReadMixin:
                 text[:600],
             ]
         )
-        digest = hashlib.sha1(fingerprint.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        digest = hashlib.sha1(fingerprint.encode("utf-8", errors="ignore"), usedforsecurity=False).hexdigest()[:16]
         return f"{notification_type}:{digest}"
 
     async def _extract_notification_from_article(self, article: Any) -> ObservedNotificationData | None:
