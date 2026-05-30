@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 try:
     from XController import XTextAdapter
@@ -433,6 +433,18 @@ class PostRestrictionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics["reposts"], 0)
         self.assertEqual(metrics["likes"], 14)
         self.assertEqual(metrics["views"], 2627)
+
+    async def test_article_metrics_logs_when_text_extraction_fails(self) -> None:
+        article = MagicMock()
+        self.adapter._inner_text = AsyncMock(side_effect=RuntimeError("inner boom"))  # type: ignore[method-assign]
+        self.adapter._extract_article_text = AsyncMock(return_value="")  # type: ignore[method-assign]
+
+        with self.assertLogs("XController._adapter_read", level="DEBUG") as logs:
+            metrics = await self.adapter._extract_article_metrics(article)
+
+        self.assertEqual(metrics, {"views": 0, "likes": 0, "replies": 0, "comments": 0, "reposts": 0, "follows": 0})
+        self.assertTrue(any("extract_article_metrics_text_failed" in line for line in logs.output))
+        self.assertTrue(any("inner boom" in line for line in logs.output))
 
     async def test_notifications_include_author_reply_limit_notice(self) -> None:
         self.adapter.page = FakePage(

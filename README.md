@@ -98,7 +98,10 @@ Compatibility notes:
 
 ## Project Layout
 
-- `adapter.py`: main X controller implementation
+- `adapter.py`: public adapter surface and compatibility re-exports
+- `_adapter_runtime.py`: startup, shutdown, navigation, and low-level Playwright helpers
+- `_adapter_read.py`: timeline, notifications, account stats, preflight, and diagnostics read flows
+- `_adapter_write.py`: posting, engagement, delete, follow, and other mutating flows
 - `sync.py`: synchronous service facade over the async controller APIs
 - `_ui_selectors.py`: centralized X DOM selector and UI rule tables
 - `_diagnostics.py`: soft-failure diagnostics and strict-mode error types
