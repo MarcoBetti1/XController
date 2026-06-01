@@ -1974,6 +1974,7 @@ class _AdapterRuntimeMixin:
         body = ""
         with contextlib.suppress(Exception):
             body = (await self._inner_text(article, timeout_ms=1200)).strip()
+        created_at = await self._extract_article_timestamp(article)
         social_context = await self._extract_article_social_context(article)
         own_handle_lower = own_handle.lower()
         author_lower = author.lower()
@@ -1990,6 +1991,7 @@ class _AdapterRuntimeMixin:
             "url": url or (f"{self.BASE_URL}/i/web/status/{post_id}" if post_id else ""),
             "author": author,
             "text": text,
+            "created_at": created_at.isoformat() if created_at else None,
             "social_context": social_context,
             "is_reply": is_reply,
             "is_repost": is_repost,
@@ -2093,6 +2095,13 @@ class _AdapterRuntimeMixin:
                 return None
             item["post_id"] = post_id
             item["url"] = f"{self.BASE_URL}/i/web/status/{post_id}"
+        author_matches = str(item.get("author") or "").lower() == own_handle.lower()
+        if author_matches and kind == "reply" and not bool(item.get("is_repost")):
+            # Direct status pages can omit the profile "Replying to" marker. For
+            # exact created-content deletes, trust the caller's ledger kind.
+            item["is_reply"] = True
+        if author_matches and kind == "quote" and not bool(item.get("is_repost")):
+            item["is_quote"] = True
         if not self._profile_item_matches_kind(item, kind, own_handle):
             logger.warning(
                 "direct_delete_status_kind_mismatch target=%s kind=%s author=%s is_reply=%s is_repost=%s is_quote=%s",

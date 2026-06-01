@@ -173,13 +173,22 @@ class RuntimeLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIs(selected, reply)
 
-    async def test_post_metrics_article_falls_back_to_first_article(self) -> None:
+    async def test_post_metrics_does_not_fall_back_to_parent_article(self) -> None:
         parent = FakeArticle("parent", {"111"})
         self.adapter.page = FakeArticlePage([parent])  # type: ignore[assignment]
 
         selected = await self.adapter._post_metrics_article("333")
 
-        self.assertIs(selected, parent)
+        self.assertIsNone(selected)
+
+    async def test_post_metrics_returns_empty_when_only_parent_article_is_present(self) -> None:
+        parent = FakeArticle("parent", {"111"})
+        self.adapter.page = FakeArticlePage([parent])  # type: ignore[assignment]
+        self.adapter._open_post_page = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        metrics = await self.adapter.post_metrics("333")
+
+        self.assertEqual(metrics, {})
 
     async def test_post_metrics_returns_empty_when_status_page_has_no_article(self) -> None:
         self.adapter.page = FakeArticlePage([])  # type: ignore[assignment]
