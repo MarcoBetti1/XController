@@ -12,6 +12,7 @@ from typing import Any
 
 from . import _ui_selectors as ui
 from ._adapter_runtime import ImagePathInput
+from ._diagnostics import ActionFailureStage
 from .base import ActionResult
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,25 @@ logger = logging.getLogger(__name__)
 
 class _AdapterWriteMixin:
     """State-mutating write and cleanup flows for X posts, replies, quotes, and follows."""
+
+    def _unknown_id_confirmation_diagnostic(self, action: str, signal: str) -> dict[str, Any]:
+        return {
+            "confirmation_signal": {
+                "action": action,
+                "signal": str(signal or "unknown")[:120],
+            }
+        }
+
+    def _set_unknown_id_confirmation_signal(self, action: str, signal: str) -> None:
+        self._last_unknown_id_confirmation_signal = {"action": action, "signal": str(signal or "unknown")[:120]}
+
+    def _consume_unknown_id_confirmation_signal(self, action: str) -> dict[str, Any]:
+        payload = getattr(self, "_last_unknown_id_confirmation_signal", None)
+        if isinstance(payload, dict) and payload.get("action") == action:
+            self._last_unknown_id_confirmation_signal = None
+            return self._unknown_id_confirmation_diagnostic(action, str(payload.get("signal") or "unknown"))
+        return self._unknown_id_confirmation_diagnostic(action, "signal_not_observed")
+
     async def _open_compose_box(self):
         # Prefer click-driven compose from home/sidebar.
         if not await self._looks_like_home_timeline():
@@ -92,13 +112,13 @@ class _AdapterWriteMixin:
             image_paths: Optional image path(s) to attach before submit.
         """
         if not self.page:
-            return await self._action_result("post", failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("post", failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         media_preflight = await self.attach_images_preflight(image_paths)
         if not media_preflight.ok:
             return await self._action_result(
                 "post",
                 failure_reason=str(media_preflight.errors[0].get("reason") or "media_preflight_failed"),
-                failure_stage="media_attach",
+                failure_stage=ActionFailureStage.MEDIA_ATTACH,
                 media_paths=media_preflight.normalized_paths,
                 diagnostic={"media_preflight": media_preflight.to_dict()},
             )
@@ -113,7 +133,7 @@ class _AdapterWriteMixin:
         return await self._action_result(
             "post",
             failure_reason="submit_not_confirmed",
-            failure_stage="post_submit",
+            failure_stage=ActionFailureStage.POST_SUBMIT,
             media_paths=media_preflight.normalized_paths,
         )
 
@@ -196,10 +216,10 @@ class _AdapterWriteMixin:
     async def like_post_detailed(self, platform_post_id: str) -> ActionResult:
         """Run the `like_post_detailed` interaction workflow against a target post."""
         if not self.page:
-            return await self._action_result("like", target_post_id=str(platform_post_id), failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("like", target_post_id=str(platform_post_id), failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         post_id = self._normalize_post_id(platform_post_id)
         if not post_id:
-            return await self._action_result("like", target_post_id=str(platform_post_id), failure_reason="target_post_not_found", failure_stage="target_lookup")
+            return await self._action_result("like", target_post_id=str(platform_post_id), failure_reason="target_post_not_found", failure_stage=ActionFailureStage.TARGET_LOOKUP)
         try:
             if await self._like_in_current_context(platform_post_id):
                 result = await self._action_result("like", ok=True, target_post_id=post_id)
@@ -216,7 +236,7 @@ class _AdapterWriteMixin:
                     "like",
                     target_post_id=post_id,
                     failure_reason="like_button_not_found",
-                    failure_stage="action_control",
+                    failure_stage=ActionFailureStage.ACTION_CONTROL,
                     raw={"fallback": fallback},
                 )
             preflight = await self.preflight_action(post_id, action="like")
@@ -225,7 +245,7 @@ class _AdapterWriteMixin:
                 "like",
                 target_post_id=post_id,
                 failure_reason=preflight.reason or "target_post_not_found",
-                failure_stage="target_lookup",
+                failure_stage=ActionFailureStage.TARGET_LOOKUP,
                 raw={"preflight": preflight.to_dict()},
             )
         except Exception as exc:
@@ -238,7 +258,7 @@ class _AdapterWriteMixin:
                 "like",
                 target_post_id=post_id,
                 failure_reason="unknown_exception",
-                failure_stage="unknown",
+                failure_stage=ActionFailureStage.UNKNOWN,
                 diagnostic={"exception": type(exc).__name__, "message": str(exc)[:260]},
             )
 
@@ -256,11 +276,11 @@ class _AdapterWriteMixin:
         """Run the `view_post_detailed` interaction workflow against a target post."""
         post_id = self._normalize_post_id(platform_post_id)
         if not self.page:
-            return await self._action_result("view", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("view", target_post_id=post_id, failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         result = await self.engage_post(post_id, do_view=True, do_like=False, dwell_seconds=dwell_seconds)
         if result.get("viewed"):
             return await self._action_result("view", ok=True, target_post_id=post_id)
-        return await self._action_result("view", target_post_id=post_id, failure_reason="target_post_not_found", failure_stage="target_lookup")
+        return await self._action_result("view", target_post_id=post_id, failure_reason="target_post_not_found", failure_stage=ActionFailureStage.TARGET_LOOKUP)
 
     async def quote_post(
         self,
@@ -275,6 +295,7 @@ class _AdapterWriteMixin:
         if not post_id:
             return None
         image_files = self._normalize_image_paths(image_paths)
+        self._last_unknown_id_confirmation_signal = None
         try:
             if not await self._open_post_page(post_id):
                 return None
@@ -302,6 +323,19 @@ class _AdapterWriteMixin:
                 quote_id = await self._guess_recent_post_id()
             if quote_id and quote_id != post_id:
                 return quote_id
+            signal = "composer_cleared"
+            send_after = await self._find_first(ui.REPLY_SEND_BUTTONS, timeout_ms=900)
+            if send_after and (not await self._is_button_enabled(send_after)):
+                signal = "send_button_disabled"
+            else:
+                box_text = ""
+                with contextlib.suppress(Exception):
+                    box_text = (await self._inner_text(box)).strip()
+                if box_text:
+                    signal = "box_not_empty"
+                else:
+                    signal = "box_empty"
+            self._set_unknown_id_confirmation_signal("quote", signal)
             return "unknown_quote_id"
         except Exception as exc:
             if self._is_driver_connection_closed(exc):
@@ -320,26 +354,30 @@ class _AdapterWriteMixin:
         """Run the `quote_post_detailed` interaction workflow against a target post."""
         post_id = self._normalize_post_id(platform_post_id)
         if not self.page:
-            return await self._action_result("quote", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("quote", target_post_id=post_id, failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         media_preflight = await self.attach_images_preflight(image_paths)
         if not media_preflight.ok:
             return await self._action_result(
                 "quote",
                 target_post_id=post_id,
                 failure_reason=str(media_preflight.errors[0].get("reason") or "media_preflight_failed"),
-                failure_stage="media_attach",
+                failure_stage=ActionFailureStage.MEDIA_ATTACH,
                 media_paths=media_preflight.normalized_paths,
                 diagnostic={"media_preflight": media_preflight.to_dict()},
             )
         preflight = await self.preflight_action(post_id, action="quote")
         created_id = await self.quote_post(post_id, text=text, image_paths=media_preflight.normalized_paths)
         if created_id:
+            diagnostic = {}
+            if created_id == "unknown_quote_id":
+                diagnostic = self._consume_unknown_id_confirmation_signal("quote")
             result = await self._action_result(
                 "quote",
                 ok=True,
                 target_post_id=post_id,
                 created_post_id=created_id,
                 media_paths=media_preflight.normalized_paths,
+                diagnostic=diagnostic,
                 raw={"preflight": preflight.to_dict()},
             )
             result.composer_opened = True
@@ -351,7 +389,7 @@ class _AdapterWriteMixin:
             "quote",
             target_post_id=post_id,
             failure_reason=preflight.reason or "quote_button_or_box_not_found",
-            failure_stage="composer_open",
+            failure_stage=ActionFailureStage.COMPOSER_OPEN,
             media_paths=media_preflight.normalized_paths,
             raw={"preflight": preflight.to_dict()},
         )
@@ -381,17 +419,17 @@ class _AdapterWriteMixin:
     ) -> ActionResult:
         """Run the `reply_to_post_detailed` interaction workflow against a target post."""
         if not self.page:
-            return await self._action_result("reply", target_post_id=str(platform_post_id), failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("reply", target_post_id=str(platform_post_id), failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         post_id = self._normalize_post_id(platform_post_id)
         if not post_id:
-            return await self._action_result("reply", target_post_id=str(platform_post_id), failure_reason="target_post_not_found", failure_stage="target_lookup")
+            return await self._action_result("reply", target_post_id=str(platform_post_id), failure_reason="target_post_not_found", failure_stage=ActionFailureStage.TARGET_LOOKUP)
         media_preflight = await self.attach_images_preflight(image_paths)
         if not media_preflight.ok:
             return await self._action_result(
                 "reply",
                 target_post_id=post_id,
                 failure_reason=str(media_preflight.errors[0].get("reason") or "media_preflight_failed"),
-                failure_stage="media_attach",
+                failure_stage=ActionFailureStage.MEDIA_ATTACH,
                 media_paths=media_preflight.normalized_paths,
                 diagnostic={"media_preflight": media_preflight.to_dict()},
             )
@@ -404,7 +442,7 @@ class _AdapterWriteMixin:
                         "reply",
                         target_post_id=post_id,
                         failure_reason="reply_limited",
-                        failure_stage="preflight",
+                        failure_stage=ActionFailureStage.PREFLIGHT,
                         attempts=attempt,
                         media_paths=image_files,
                         raw={"preflight": preflight.to_dict()},
@@ -427,7 +465,7 @@ class _AdapterWriteMixin:
                         "reply",
                         target_post_id=post_id,
                         failure_reason="text_entry_failed",
-                        failure_stage="text_entry",
+                        failure_stage=ActionFailureStage.TEXT_ENTRY,
                         attempts=attempt,
                         media_paths=image_files,
                     )
@@ -443,7 +481,7 @@ class _AdapterWriteMixin:
                         "reply",
                         target_post_id=post_id,
                         failure_reason="media_upload_failed",
-                        failure_stage="media_attach",
+                        failure_stage=ActionFailureStage.MEDIA_ATTACH,
                         attempts=attempt,
                         media_paths=image_files,
                     )
@@ -472,7 +510,7 @@ class _AdapterWriteMixin:
                         "reply",
                         target_post_id=post_id,
                         failure_reason="reply_submit_trigger_not_found",
-                        failure_stage="submit_lookup",
+                        failure_stage=ActionFailureStage.SUBMIT_LOOKUP,
                         attempts=attempt,
                         media_paths=image_files,
                     )
@@ -491,7 +529,7 @@ class _AdapterWriteMixin:
                             "reply",
                             target_post_id=post_id,
                             failure_reason="submit_blocked_by_audience_modal",
-                            failure_stage="confirmation",
+                            failure_stage=ActionFailureStage.CONFIRMATION,
                             attempts=attempt,
                             media_paths=image_files,
                         )
@@ -512,7 +550,7 @@ class _AdapterWriteMixin:
                         "reply",
                         target_post_id=post_id,
                         failure_reason="submit_blocked_by_audience_modal",
-                        failure_stage="confirmation",
+                        failure_stage=ActionFailureStage.CONFIRMATION,
                         attempts=attempt,
                         media_paths=image_files,
                     )
@@ -545,6 +583,7 @@ class _AdapterWriteMixin:
                         created_post_id="unknown_reply_id",
                         attempts=attempt,
                         media_paths=image_files,
+                        diagnostic=self._unknown_id_confirmation_diagnostic("reply", "send_button_disabled"),
                     )
                     result.composer_opened = True
                     result.submit_clicked = True
@@ -562,6 +601,7 @@ class _AdapterWriteMixin:
                         created_post_id="unknown_reply_id",
                         attempts=attempt,
                         media_paths=image_files,
+                        diagnostic=self._unknown_id_confirmation_diagnostic("reply", "box_empty"),
                     )
                     result.composer_opened = True
                     result.submit_clicked = True
@@ -577,7 +617,7 @@ class _AdapterWriteMixin:
                 "reply",
                 target_post_id=post_id,
                 failure_reason="submit_not_confirmed",
-                failure_stage="post_submit",
+                failure_stage=ActionFailureStage.POST_SUBMIT,
                 attempts=3,
                 media_paths=image_files,
             )
@@ -591,7 +631,7 @@ class _AdapterWriteMixin:
                 "reply",
                 target_post_id=post_id,
                 failure_reason="unknown_exception",
-                failure_stage="unknown",
+                failure_stage=ActionFailureStage.UNKNOWN,
                 media_paths=image_files,
                 diagnostic={"exception": type(exc).__name__, "message": str(exc)[:260]},
             )
@@ -929,7 +969,7 @@ class _AdapterWriteMixin:
         """Delete owned X content using the `delete_post_detailed` flow."""
         post_id = self._normalize_post_id(platform_post_id)
         if not self.page:
-            return await self._action_result("delete", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("delete", target_post_id=post_id, failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         if kind == "reply":
             ok = await self.delete_reply(post_id)
         elif kind == "repost":
@@ -943,7 +983,7 @@ class _AdapterWriteMixin:
             ok=ok,
             target_post_id=post_id,
             failure_reason="" if ok else "target_post_not_found",
-            failure_stage="confirmation" if ok else "target_lookup",
+            failure_stage=ActionFailureStage.CONFIRMATION if ok else ActionFailureStage.TARGET_LOOKUP,
             raw={"kind": kind},
         )
 
@@ -951,13 +991,13 @@ class _AdapterWriteMixin:
         """Execute the `repost_post_detailed` controller operation."""
         post_id = self._normalize_post_id(platform_post_id)
         if not self.page:
-            return await self._action_result("repost", target_post_id=post_id, failure_reason="page_not_started", failure_stage="not_started")
+            return await self._action_result("repost", target_post_id=post_id, failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED)
         if not post_id or not await self._open_post_page(post_id):
-            return await self._action_result("repost", target_post_id=post_id, failure_reason="target_post_not_found", failure_stage="target_lookup")
+            return await self._action_result("repost", target_post_id=post_id, failure_reason="target_post_not_found", failure_stage=ActionFailureStage.TARGET_LOOKUP)
         try:
             repost_btn = await self._find_first_enabled(ui.REPOST_BUTTONS, timeout_ms=1400)
             if not repost_btn:
-                return await self._action_result("repost", target_post_id=post_id, failure_reason="repost_button_not_found", failure_stage="target_lookup")
+                return await self._action_result("repost", target_post_id=post_id, failure_reason="repost_button_not_found", failure_stage=ActionFailureStage.TARGET_LOOKUP)
             await self._click(repost_btn)
             await self.human.jitter(220, 680)
             confirm = await self._find_first_enabled(
@@ -980,7 +1020,7 @@ class _AdapterWriteMixin:
                 "repost",
                 target_post_id=post_id,
                 failure_reason="unknown_exception",
-                failure_stage="unknown",
+                failure_stage=ActionFailureStage.UNKNOWN,
                 diagnostic={"exception": type(exc).__name__, "message": str(exc)[:260]},
             )
 
@@ -988,13 +1028,13 @@ class _AdapterWriteMixin:
         """Run the `follow_user_detailed` follow-state action on the target account."""
         handle = self._normalize_username(username)
         if not self.page:
-            return await self._action_result("follow", failure_reason="page_not_started", failure_stage="not_started", raw={"username": handle})
+            return await self._action_result("follow", failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED, raw={"username": handle})
         ok = await self.follow_user(handle)
         return await self._action_result(
             "follow",
             ok=ok,
-            failure_reason="" if ok else (self.last_action_error.message if self.last_action_error else "target_user_not_found"),
-            failure_stage="confirmation" if ok else "target_lookup",
+            failure_reason="" if ok else ((self.last_action_error.message if self.last_action_error else "").strip() or "target_user_not_found"),
+            failure_stage=ActionFailureStage.CONFIRMATION if ok else ActionFailureStage.TARGET_LOOKUP,
             raw={"username": handle},
         )
 
@@ -1002,13 +1042,13 @@ class _AdapterWriteMixin:
         """Run the `unfollow_user_detailed` follow-state action on the target account."""
         handle = self._normalize_username(username)
         if not self.page:
-            return await self._action_result("unfollow", failure_reason="page_not_started", failure_stage="not_started", raw={"username": handle})
+            return await self._action_result("unfollow", failure_reason="page_not_started", failure_stage=ActionFailureStage.NOT_STARTED, raw={"username": handle})
         ok = await self.unfollow_user(handle)
         return await self._action_result(
             "unfollow",
             ok=ok,
-            failure_reason="" if ok else (self.last_action_error.message if self.last_action_error else "target_user_not_found"),
-            failure_stage="confirmation" if ok else "target_lookup",
+            failure_reason="" if ok else ((self.last_action_error.message if self.last_action_error else "").strip() or "target_user_not_found"),
+            failure_stage=ActionFailureStage.CONFIRMATION if ok else ActionFailureStage.TARGET_LOOKUP,
             raw={"username": handle},
         )
 

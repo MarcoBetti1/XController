@@ -21,7 +21,7 @@ from playwright.async_api import BrowserContext, Page, async_playwright
 from playwright.sync_api import BrowserContext as SyncBrowserContext, Page as SyncPage, sync_playwright as sync_playwright
 
 from . import _ui_selectors as ui
-from ._diagnostics import ActionFailureInfo, UIActionError
+from ._diagnostics import ActionFailureInfo, ActionFailureStage, UIActionError
 from .base import (
     ActionResult,
     LoginState,
@@ -61,6 +61,8 @@ class _AdapterRuntimeMixin:
         )
         self._authenticated_handle: str | None = None
         self.last_action_error: ActionFailureInfo | None = None
+        self._recent_parser_warnings: list[dict[str, str]] = []
+        self._recent_parser_warning_limit = 25
         self.human = HumanMotion(self.settings)
 
     async def start(self) -> None:
@@ -335,8 +337,9 @@ class _AdapterRuntimeMixin:
         result.current_url = self.page.url if self.page else ""
         result.current_state = await self._current_state_name()
         result.active_home_tab = await self._active_home_tab()
-        if self.last_action_error and not result.diagnostic:
-            result.diagnostic = {"last_action_error": self.last_action_error.to_dict()}
+        if self.last_action_error:
+            result.diagnostic = dict(result.diagnostic or {})
+            result.diagnostic.setdefault("last_action_error", self.last_action_error.to_dict())
         return result
 
     async def _action_result(
@@ -347,7 +350,7 @@ class _AdapterRuntimeMixin:
         target_post_id: str = "",
         created_post_id: str = "",
         failure_reason: str = "",
-        failure_stage: str = "unknown",
+        failure_stage: str = ActionFailureStage.UNKNOWN,
         attempts: int = 0,
         media_paths: list[str] | None = None,
         raw: dict[str, Any] | None = None,
@@ -360,8 +363,8 @@ class _AdapterRuntimeMixin:
             target_post_id=post_id,
             created_post_id=created_post_id,
             target_url=f"{self.BASE_URL}/i/web/status/{post_id}" if post_id else "",
-            failure_reason=failure_reason,
-            failure_stage=failure_stage,
+            failure_reason=failure_reason or ("unknown_failure" if not ok else ""),
+            failure_stage=failure_stage or (ActionFailureStage.UNKNOWN if not ok else ""),
             attempts=attempts,
             media_paths=list(media_paths or []),
             diagnostic=dict(diagnostic or {}),

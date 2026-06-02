@@ -130,6 +130,35 @@ Preflight and diagnostics:
 
 `XTextAdapter.last_action_error` holds the latest soft UI failure that was converted into a boolean/empty-result outcome.
 
+`ActionResult.failure_stage` uses a stable taxonomy:
+
+- `not_started`
+- `target_lookup`
+- `media_attach`
+- `text_entry`
+- `submit_lookup`
+- `confirmation`
+- `post_submit`
+- `composer_open`
+- `action_control`
+- `preflight`
+- `unknown`
+
+Common `ActionResult.failure_reason` values include:
+
+- `page_not_started`
+- `target_post_not_found`
+- `media_preflight_failed`
+- `text_entry_failed`
+- `reply_submit_trigger_not_found`
+- `submit_blocked_by_audience_modal`
+- `submit_not_confirmed`
+- `reply_limited`
+- `unknown_exception`
+- `target_user_not_found`
+
+Parser fallbacks now emit bounded structured parser warnings (category/reason/context) into controller diagnostics. They are exposed in timeline warnings (`TimelineReadResult.warnings`) and compact recent-warning summaries surfaced by `health_check()` / `debug_snapshot()`.
+
 For long-running services, prefer detailed methods over legacy compact methods. The compact methods are kept for compatibility and return the same shapes as before; a future major version is expected to make the `ActionResult`-returning methods the default.
 
 `ActionFailureInfo` contains:
