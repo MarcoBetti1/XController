@@ -445,6 +445,9 @@ class PostRestrictionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(metrics, {"views": 0, "likes": 0, "replies": 0, "comments": 0, "reposts": 0, "follows": 0})
         self.assertTrue(any("extract_article_metrics_text_failed" in line for line in logs.output))
         self.assertTrue(any("inner boom" in line for line in logs.output))
+        self.assertTrue(self.adapter._recent_parser_warnings)
+        self.assertTrue(any(item.get("category") == "metrics" for item in self.adapter._recent_parser_warnings))
+        self.assertTrue(any(item.get("reason") == "article_metrics_text_failed" for item in self.adapter._recent_parser_warnings))
 
     async def test_notifications_include_author_reply_limit_notice(self) -> None:
         self.adapter.page = FakePage(

@@ -4,6 +4,7 @@ Use this file for the next feature or release notes.
 
 ## Unreleased
 
+- Issue #12: harden browser diagnostics by centralizing `ActionResult.failure_stage` taxonomy, adding structured parser-warning capture for read fallbacks, and enriching unknown-id submission confirmations for reply/quote flows.
 - Refactor the former monolithic `adapter.py` into cohesive internal modules:
   `_adapter_runtime.py`, `_adapter_read.py`, and `_adapter_write.py` while keeping
   `XController`/`XTextAdapter` imports and behavior unchanged from the package root.

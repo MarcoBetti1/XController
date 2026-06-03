@@ -33,6 +33,65 @@ logger = logging.getLogger(__name__)
 
 class _AdapterReadMixin:
     """Read-only and preflight capabilities for timeline, notifications, and account surfaces."""
+
+    def _parser_warning_count(self) -> int:
+        return len(getattr(self, "_recent_parser_warnings", []))
+
+    def _record_parser_warning(
+        self,
+        *,
+        category: str,
+        reason: str,
+        context: str = "",
+        warning_bucket: list[str] | None = None,
+        raw_bucket: dict[str, Any] | None = None,
+    ) -> str:
+        entry = {
+            "category": str(category or "parser")[:80],
+            "reason": str(reason or "unknown")[:120],
+            "context": str(context or "")[:120],
+            "url": str(self.page.url if self.page else "")[:260],
+        }
+        recent = getattr(self, "_recent_parser_warnings", None)
+        if not isinstance(recent, list):
+            recent = []
+            self._recent_parser_warnings = recent
+        recent.append(entry)
+        limit = max(1, int(getattr(self, "_recent_parser_warning_limit", 25)))
+        if len(recent) > limit:
+            del recent[:-limit]
+        token = f"parser:{entry['category']}:{entry['reason']}"
+        if entry["context"]:
+            token = f"{token}:{entry['context']}"
+        if warning_bucket is not None and token not in warning_bucket:
+            warning_bucket.append(token)
+        if raw_bucket is not None:
+            parser_warnings = raw_bucket.get("parser_warnings")
+            if not isinstance(parser_warnings, list):
+                parser_warnings = []
+                raw_bucket["parser_warnings"] = parser_warnings
+            parser_warnings.append(dict(entry))
+        return token
+
+    def _parser_warning_tokens_since(self, start_index: int) -> list[str]:
+        recent = getattr(self, "_recent_parser_warnings", [])
+        if not isinstance(recent, list) or not recent:
+            return []
+        offset = max(0, int(start_index))
+        tokens: list[str] = []
+        for item in recent[offset:]:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("category") or "parser")[:80]
+            reason = str(item.get("reason") or "unknown")[:120]
+            context = str(item.get("context") or "")[:120]
+            token = f"parser:{category}:{reason}"
+            if context:
+                token = f"{token}:{context}"
+            if token not in tokens:
+                tokens.append(token)
+        return tokens
+
     async def read_timeline_detailed(
         self,
         limit: int = 20,
@@ -53,6 +112,7 @@ class _AdapterReadMixin:
         if requested_tab not in {"for_you", "following"}:
             requested_tab = "for_you"
         warnings: list[str] = []
+        parser_warning_start = self._parser_warning_count()
         force_refreshed = False
         if force_refresh:
             if await self.return_home(force_refresh=True):
@@ -69,6 +129,7 @@ class _AdapterReadMixin:
         else:
             await self.human.jitter(120, 420)
         if not self.page:
+            warnings.extend(self._parser_warning_tokens_since(parser_warning_start))
             return TimelineReadResult(
                 posts=[],
                 requested_tab=requested_tab,
@@ -79,7 +140,7 @@ class _AdapterReadMixin:
                 article_count=0,
                 force_refreshed=force_refreshed,
                 reset_scroll=reset_scroll,
-                warnings=["page_not_started"],
+                warnings=[*warnings, "page_not_started"],
             )
 
         active_tab = await self._active_home_tab()
@@ -94,6 +155,7 @@ class _AdapterReadMixin:
             allow_backtrack=True,
         )
         if first_pass:
+            warnings.extend(self._parser_warning_tokens_since(parser_warning_start))
             return TimelineReadResult(
                 posts=first_pass,
                 requested_tab=requested_tab,
@@ -122,6 +184,7 @@ class _AdapterReadMixin:
         active_tab = await self._active_home_tab()
         if not posts:
             warnings.append("timeline_empty_after_retry")
+        warnings.extend(self._parser_warning_tokens_since(parser_warning_start))
         return TimelineReadResult(
             posts=posts,
             requested_tab=requested_tab,
@@ -359,7 +422,13 @@ class _AdapterReadMixin:
         try:
             parsed = datetime.fromisoformat(text)
         except Exception as exc:
+            warning = self._record_parser_warning(
+                category="timestamp",
+                reason="iso_datetime_parse_failed",
+                context="fromisoformat",
+            )
             logger.debug("parse_iso_datetime_failed value=%s error=%s", raw[:120], str(exc)[:260])
+            logger.debug("parse_iso_datetime_warning warning=%s", warning)
             return None
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
@@ -375,7 +444,13 @@ class _AdapterReadMixin:
             stamp = await self._get_attribute(time_node, "datetime")
             return self._parse_iso_datetime(stamp)
         except Exception as exc:
+            warning = self._record_parser_warning(
+                category="timestamp",
+                reason="article_timestamp_extraction_failed",
+                context="time_locator",
+            )
             logger.debug("article_timestamp_extraction_failed error=%s", str(exc)[:260])
+            logger.debug("article_timestamp_warning warning=%s", warning)
             return None
 
     async def read_mentions(
@@ -563,7 +638,13 @@ class _AdapterReadMixin:
         try:
             return int(float(token) * mult)
         except Exception as exc:
+            warning = self._record_parser_warning(
+                category="metrics",
+                reason="count_token_parse_failed",
+                context="numeric_token",
+            )
             logger.debug("parse_count_token_failed token=%s error=%s", token[:80], str(exc)[:260])
+            logger.debug("parse_count_token_warning warning=%s", warning)
             return 0
 
     def _extract_metric_token(self, text: str, pattern: str) -> int:
@@ -688,7 +769,13 @@ class _AdapterReadMixin:
             for key in metrics:
                 metrics[key] = max(metrics[key], int(parsed.get(key) or 0))
         except Exception as exc:
+            warning = self._record_parser_warning(
+                category="metrics",
+                reason="article_metrics_text_failed",
+                context="inner_text",
+            )
             logger.debug("extract_article_metrics_text_failed error=%s", str(exc)[:260])
+            logger.debug("extract_article_metrics_warning warning=%s", warning)
 
         # Pull aria-label text from known metric buttons as a fallback.
         selector_map = {
@@ -714,12 +801,18 @@ class _AdapterReadMixin:
                     if token > 0:
                         metrics[key] = max(metrics[key], token)
             except Exception as exc:
+                warning = self._record_parser_warning(
+                    category="metrics",
+                    reason="article_metrics_button_failed",
+                    context=key,
+                )
                 logger.debug(
                     "extract_article_metrics_button_failed key=%s selector=%s error=%s",
                     key,
                     selector,
                     str(exc)[:260],
                 )
+                logger.debug("extract_article_metrics_button_warning warning=%s", warning)
                 continue
         metrics["comments"] = metrics["replies"]
         return metrics
@@ -1312,6 +1405,7 @@ class _AdapterReadMixin:
             "visible_dialogs": await self._visible_dialogs(),
             "composer_state": {"open": await self._is_compose_state()},
             "selector_probe": selector_probe,
+            "recent_parser_warnings": [dict(item) for item in getattr(self, "_recent_parser_warnings", [])[-5:]],
             "screenshot_path": str(screenshot_path),
             "html_path": str(html_path),
         }
@@ -1375,6 +1469,7 @@ class _AdapterReadMixin:
             rate_limited="rate limit" in content or "try again later" in content,
             blocking_modal_present=bool(await self._visible_dialogs()),
             last_action_error=self.last_action_error.to_dict() if self.last_action_error else {},
+            raw={"recent_parser_warnings": [dict(item) for item in getattr(self, "_recent_parser_warnings", [])[-5:] ]},
         )
 
     async def read_post_thread_context(

@@ -37,3 +37,19 @@ class UIActionError(RuntimeError):
     def __init__(self, failure: ActionFailureInfo):
         super().__init__(failure.summary)
         self.failure = failure
+
+
+class ActionFailureStage:
+    """Stable stage taxonomy for `ActionResult.failure_stage` values."""
+
+    NOT_STARTED = "not_started"
+    TARGET_LOOKUP = "target_lookup"
+    MEDIA_ATTACH = "media_attach"
+    TEXT_ENTRY = "text_entry"
+    SUBMIT_LOOKUP = "submit_lookup"
+    CONFIRMATION = "confirmation"
+    POST_SUBMIT = "post_submit"
+    COMPOSER_OPEN = "composer_open"
+    ACTION_CONTROL = "action_control"
+    PREFLIGHT = "preflight"
+    UNKNOWN = "unknown"

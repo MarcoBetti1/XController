@@ -8,7 +8,18 @@ import unittest
 from unittest.mock import AsyncMock
 
 try:
-    from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, LoginState, MediaCaptureData, MediaPreflight, TimelineReadResult, XTextAdapter
+    from XController import (
+        AccountStats,
+        ActionFailureInfo,
+        ActionPreflight,
+        ActionResult,
+        ControllerSettings,
+        LoginState,
+        MediaCaptureData,
+        MediaPreflight,
+        TimelineReadResult,
+        XTextAdapter,
+    )
 except ModuleNotFoundError as exc:
     if exc.name != "XController":
         raise
@@ -23,7 +34,18 @@ except ModuleNotFoundError as exc:
     module = importlib.util.module_from_spec(spec)
     sys.modules["XController"] = module
     spec.loader.exec_module(module)
-    from XController import AccountStats, ActionPreflight, ActionResult, ControllerSettings, LoginState, MediaCaptureData, MediaPreflight, TimelineReadResult, XTextAdapter
+    from XController import (
+        AccountStats,
+        ActionFailureInfo,
+        ActionPreflight,
+        ActionResult,
+        ControllerSettings,
+        LoginState,
+        MediaCaptureData,
+        MediaPreflight,
+        TimelineReadResult,
+        XTextAdapter,
+    )
 
 
 class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
@@ -140,6 +162,106 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result.confirmation_observed)
         adapter.engage_post.assert_awaited_once_with("123", do_view=False, do_like=True)
         adapter.preflight_action.assert_not_awaited()
+
+    async def test_follow_user_detailed_includes_soft_error_diagnostic_on_failure(self) -> None:
+        class FakePage:
+            url = "https://x.com/example"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.follow_user = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        adapter.last_action_error = ActionFailureInfo(
+            action="follow_user",
+            error_type="RuntimeError",
+            message="follow button vanished",
+            url="https://x.com/example",
+            selector="button:has-text('Follow')",
+        )
+
+        result = await adapter.follow_user_detailed("example")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_stage, "target_lookup")
+        self.assertEqual(result.failure_reason, "follow button vanished")
+        self.assertIn("last_action_error", result.diagnostic)
+        self.assertEqual(result.diagnostic["last_action_error"]["action"], "follow_user")
+
+    async def test_reply_to_post_detailed_unknown_id_includes_confirmation_signal(self) -> None:
+        class FakePage:
+            url = "https://x.com/i/web/status/123"
+
+        class NoopHuman:
+            async def jitter(self, *_args, **_kwargs) -> None:
+                return None
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.human = NoopHuman()
+        box = object()
+        send = object()
+        send_after = object()
+        adapter.attach_images_preflight = AsyncMock(return_value=MediaPreflight(ok=True, normalized_paths=[]))  # type: ignore[method-assign]
+        adapter.preflight_action = AsyncMock(return_value=ActionPreflight(ok=True, action="reply", target_post_id="123"))  # type: ignore[method-assign]
+        adapter._open_reply_box_in_current_context = AsyncMock(return_value=box)  # type: ignore[method-assign]
+        adapter._clear_textbox = AsyncMock()  # type: ignore[method-assign]
+        adapter._type_text = AsyncMock()  # type: ignore[method-assign]
+        adapter._attach_images_to_composer = AsyncMock(return_value=True)  # type: ignore[method-assign]
+        adapter._find_reply_submit_button = AsyncMock(side_effect=[send, send_after])  # type: ignore[method-assign]
+        adapter._click = AsyncMock()  # type: ignore[method-assign]
+        adapter._keyboard_press = AsyncMock()  # type: ignore[method-assign]
+        adapter._has_reply_audience_modal = AsyncMock(return_value=False)  # type: ignore[method-assign]
+        adapter._find_recent_own_created_post_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        adapter._guess_recent_post_id = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        adapter._find_first = AsyncMock(return_value=send_after)  # type: ignore[method-assign]
+        adapter._is_button_enabled = AsyncMock(return_value=False)  # type: ignore[method-assign]
+
+        result = await adapter.reply_to_post_detailed("123", "hello")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.created_post_id, "unknown_reply_id")
+        self.assertEqual(result.diagnostic["confirmation_signal"]["action"], "reply")
+        self.assertEqual(result.diagnostic["confirmation_signal"]["signal"], "send_button_disabled")
+
+    async def test_quote_post_detailed_unknown_id_includes_confirmation_signal(self) -> None:
+        class FakePage:
+            url = "https://x.com/i/web/status/123"
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.attach_images_preflight = AsyncMock(return_value=MediaPreflight(ok=True, normalized_paths=[]))  # type: ignore[method-assign]
+        adapter.preflight_action = AsyncMock(return_value=ActionPreflight(ok=True, action="quote", target_post_id="123"))  # type: ignore[method-assign]
+        adapter.quote_post = AsyncMock(return_value="unknown_quote_id")  # type: ignore[method-assign]
+        adapter._last_unknown_id_confirmation_signal = {"action": "quote", "signal": "box_empty"}
+
+        result = await adapter.quote_post_detailed("123", text="hello")
+
+        self.assertTrue(result.ok)
+        self.assertEqual(result.created_post_id, "unknown_quote_id")
+        self.assertEqual(result.diagnostic["confirmation_signal"]["action"], "quote")
+        self.assertEqual(result.diagnostic["confirmation_signal"]["signal"], "box_empty")
+
+    async def test_reply_to_post_detailed_without_composer_has_stage_and_reason(self) -> None:
+        class FakePage:
+            url = "https://x.com/i/web/status/123"
+
+        class NoopHuman:
+            async def jitter(self, *_args, **_kwargs) -> None:
+                return None
+
+        adapter = self._adapter()
+        adapter.page = FakePage()  # type: ignore[assignment]
+        adapter.human = NoopHuman()
+        adapter.attach_images_preflight = AsyncMock(return_value=MediaPreflight(ok=True, normalized_paths=[]))  # type: ignore[method-assign]
+        adapter.preflight_action = AsyncMock(return_value=ActionPreflight(ok=True, action="reply", target_post_id="123"))  # type: ignore[method-assign]
+        adapter._open_reply_box_in_current_context = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        adapter._dismiss_reply_ui = AsyncMock()  # type: ignore[method-assign]
+        adapter._random_scroll = AsyncMock()  # type: ignore[method-assign]
+
+        result = await adapter.reply_to_post_detailed("123", "hello")
+
+        self.assertFalse(result.ok)
+        self.assertEqual(result.failure_stage, "post_submit")
+        self.assertEqual(result.failure_reason, "submit_not_confirmed")
 
     async def test_created_post_id_resolver_matches_recent_owned_text(self) -> None:
         class FakePage:
