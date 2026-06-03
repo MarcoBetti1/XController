@@ -140,7 +140,7 @@ class _AdapterReadMixin:
                 article_count=0,
                 force_refreshed=force_refreshed,
                 reset_scroll=reset_scroll,
-                warnings=["page_not_started"],
+                warnings=[*warnings, "page_not_started"],
             )
 
         active_tab = await self._active_home_tab()
