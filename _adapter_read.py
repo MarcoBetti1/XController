@@ -389,6 +389,19 @@ class _AdapterReadMixin:
 
         return notifications
 
+    async def _wait_for_notification_articles(self, attempts: int = 4) -> int:
+        if not self.page:
+            return 0
+        article_count = 0
+        for attempt in range(max(1, int(attempts))):
+            articles = self.page.locator('article[data-testid="tweet"], article')
+            article_count = await self._count_locator(articles)
+            if article_count > 0:
+                return article_count
+            await self._wait_network_idle(1600 if attempt == 0 else 900)
+            await self.human.jitter(220, 620)
+        return article_count
+
     async def read_notifications(
         self,
         limit: int = 20,
@@ -406,13 +419,34 @@ class _AdapterReadMixin:
         if not await self._looks_like_notifications_page():
             return []
 
-        return await self._collect_notifications_from_current_page(
+        await self._wait_for_notification_articles()
+        notifications = await self._collect_notifications_from_current_page(
             limit=max_items,
             unread_only=unread_only,
             scroll_rounds=max(2, (max_items // 5) + 3),
             max_scan=max(max_items * 4, 40),
             stagnation_limit=2,
         )
+        if notifications:
+            return notifications
+
+        opened_mentions = await self._open_notifications_mentions_tab()
+        if not opened_mentions:
+            with contextlib.suppress(Exception):
+                await self._goto(f"{self.BASE_URL}/notifications/mentions")
+            opened_mentions = await self._looks_like_notifications_page()
+        if opened_mentions:
+            await self._wait_for_notification_articles()
+            mentions = await self._collect_notifications_from_current_page(
+                limit=max_items,
+                unread_only=unread_only,
+                scroll_rounds=max(2, (max_items // 5) + 3),
+                max_scan=max(max_items * 4, 40),
+                stagnation_limit=2,
+            )
+            if mentions:
+                return mentions
+        return notifications
 
     def _parse_iso_datetime(self, value: str | None) -> datetime | None:
         raw = str(value or "").strip()
@@ -1395,10 +1429,12 @@ class _AdapterReadMixin:
             "submit_button": bool(self.page and await self._find_first(ui.POST_BUTTONS, timeout_ms=200)),
             "media_input": bool(self.page and await self._find_media_input_for_composer(None, timeout_ms=200)),
         }
+        login_state = await self.login_state()
         manifest = {
             "url": self.page.url if self.page else "",
             "current_state": await self._current_state_name(),
-            "login_state": "logged_in" if self.page and await self._any_selector(ui.LOGGED_IN_SELECTORS) else "login_required" if self.page else "not_started",
+            "login_state": "logged_in" if login_state.logged_in else "login_required" if self.page else "not_started",
+            "login_details": login_state.to_dict(),
             "active_home_tab": await self._active_home_tab(),
             "article_count": article_count,
             "articles": articles_summary,

@@ -25,9 +25,14 @@ except ModuleNotFoundError as exc:
     spec.loader.exec_module(module)
     from XController import XTextAdapter
 
+from XController.base import ObservedNotificationData
+
 
 class NoopHuman:
     async def jitter(self, *_args, **_kwargs) -> None:
+        return None
+
+    async def wait_for_network_idle(self, *_args, **_kwargs) -> None:
         return None
 
 
@@ -212,6 +217,24 @@ class NotificationReadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(notifications[0].platform_post_id, "102")
         self.assertTrue(notifications[0].unread)
         self.assertEqual(notifications[0].notification_type, "mention")
+
+    async def test_read_notifications_falls_back_to_mentions_when_all_feed_is_empty(self) -> None:
+        self.adapter.page = FakePage([])
+        mention = ObservedNotificationData(
+            notification_id="mention:201:bob",
+            notification_type="mention",
+            actor="bob",
+            text="Bob mentioned you",
+            raw={"post_id": "201", "platform_post_id": "201"},
+        )
+        self.adapter._collect_notifications_from_current_page = AsyncMock(side_effect=[[], [mention]])  # type: ignore[method-assign]
+        self.adapter._open_notifications_mentions_tab = AsyncMock(return_value=True)  # type: ignore[method-assign]
+
+        notifications = await self.adapter.read_notifications(limit=5)
+
+        self.assertEqual(notifications, [mention])
+        self.assertEqual(self.adapter._collect_notifications_from_current_page.await_count, 2)  # type: ignore[attr-defined]
+        self.adapter._open_notifications_mentions_tab.assert_awaited_once()  # type: ignore[attr-defined]
 
     async def test_notification_raw_includes_related_status_ids(self) -> None:
         self.adapter.page = FakePage(

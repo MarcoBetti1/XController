@@ -491,6 +491,17 @@ class ServiceContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(logged_in.page_state, "home")
         self.assertEqual(logged_in.active_home_tab, "for_you")
 
+        adapter.current_state = AsyncMock(
+            return_value={"state": "unknown", "url": "https://x.com/i/jf/onboarding/web?mode=login"}
+        )  # type: ignore[method-assign]
+        adapter._any_selector = AsyncMock(side_effect=[False, True])
+        adapter._count_locator = AsyncMock(return_value=0)
+        adapter._active_home_tab = AsyncMock(return_value="")
+
+        onboarding_login = await adapter.login_state()
+        self.assertFalse(onboarding_login.logged_in)
+        self.assertTrue(onboarding_login.login_required)
+
     async def test_capture_post_media_returns_normalized_captures(self) -> None:
         class FakePage:
             url = "https://x.com/example/status/123"

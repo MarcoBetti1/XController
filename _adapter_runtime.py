@@ -2285,7 +2285,7 @@ class _AdapterRuntimeMixin:
             return {"state": "not_started", "url": ""}
         url = self.page.url or ""
         state: dict[str, str]
-        if any(token in url for token in ("/login", "/i/flow/")) and await self._any_selector(ui.LOGIN_SELECTORS):
+        if self._looks_like_login_flow_url(url) and await self._any_selector(ui.LOGIN_SELECTORS):
             state = {"state": "login", "url": url}
         elif "/compose/" in url:
             state = {"state": "compose", "url": url}
@@ -2304,6 +2304,10 @@ class _AdapterRuntimeMixin:
         if self.last_action_error:
             state["last_action_error"] = self.last_action_error.summary
         return state
+
+    def _looks_like_login_flow_url(self, url: str) -> bool:
+        lowered = str(url or "").lower()
+        return any(token in lowered for token in ("/login", "/i/flow/", "/i/jf/onboarding")) or "mode=login" in lowered
 
     async def login_state(self) -> LoginState:
         """Return structured controller state from `login_state`."""
@@ -2326,11 +2330,12 @@ class _AdapterRuntimeMixin:
         with contextlib.suppress(Exception):
             login_link_visible = bool(await self._count_locator(self.page.locator('a[href="/login"]')))
 
-        login_url = any(token in url for token in ("/login", "/i/flow/"))
+        login_url = self._looks_like_login_flow_url(url)
         known_logged_in_surface = page_state in {"home", "search", "status", "profile", "notifications", "compose"}
         logged_in = bool(
-            logged_in_selectors_visible
-            or (known_logged_in_surface and not login_markers_visible and not login_link_visible and not login_url)
+            not login_url
+            and not login_markers_visible
+            and (logged_in_selectors_visible or (known_logged_in_surface and not login_link_visible))
         )
         raw: dict[str, Any] = {
             "login_markers_visible": login_markers_visible,
@@ -2357,9 +2362,9 @@ class _AdapterRuntimeMixin:
             await self._goto(f"{self.BASE_URL}/home")
         current_url = self.page.url or ""
         login_markers_visible = await self._any_selector(ui.LOGIN_SELECTORS)
-        if login_markers_visible and any(token in current_url for token in ("/login", "/i/flow/")):
+        if self._looks_like_login_flow_url(current_url):
             return False
-        if any(token in current_url for token in ("/login", "/i/flow/")) and not await self._looks_like_home_timeline():
+        if login_markers_visible:
             return False
         if await self._any_selector(ui.LOGGED_IN_SELECTORS):
             return True
